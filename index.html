@@ -1254,25 +1254,63 @@
 
 
 <script>
-// ═══════════════════════════════════════════
-// BLE MIDI Constants (Apple BLE MIDI spec)
-// ═══════════════════════════════════════════
-const BLE_MIDI_SERVICE   = '03b80e5a-ede8-4b33-a751-6ce34ec4c700';
-const BLE_MIDI_CHAR      = '7772e5db-3868-4112-a1a9-f2669d106bf3';
+// ═══════════════════════════════════════════════════════════════════
+// REAL HOTONE AMPERO CONTROL PROTOCOL
+// Reverse-engineered from BTSnoop HCI log
+//
+// The device does NOT use BLE MIDI (Apple spec). It uses a proprietary
+// GATT service with vendor-specific 128-bit UUIDs:
+//
+//   Service:    36d70000-a25b-40fe-99a0-36453a1d8704  (inferred base)
+//   CMD_TX:     36d70001-a25b-40fe-99a0-36453a1d8704  (hdl 0x0025) WRITE_WITHOUT_RESPONSE + NOTIFY
+//   BANK_NAME:  36d70002-a25b-40fe-99a0-36453a1d8704  (hdl 0x0029) NOTIFY  — bank name list + config
+//   STATUS:     36d70003-a25b-40fe-99a0-36453a1d8704  (hdl 0x002d) NOTIFY  — bank status/ACKs
+//   SW_STATE:   36d70006-a25b-40fe-99a0-36453a1d8704  (hdl 0x0039) NOTIFY  — footswitch state
+//
+// Commands written to CMD_TX (hdl 0x0025):
+//   [0x00, 0x0A]                          → GET_BANK_LIST   (device replies on BANK_NAME)
+//   [bankNum, 0x06]                       → GET_BANK_CONFIG (device replies on BANK_NAME)
+//   [bankNum, 0x01, lo, hi, outputType]   → SET_BANK_PARAM
+//   [bankNum, 0x03, swIdx, value]         → SET_SWITCH_STATE
+//   [bankNum, 0x08, value]                → SET_EXP_STATE
+//
+// BANK_NAME notify format (hdl 0x0029):
+//   Phase 1 — Bank name list (one 20-byte notify per bank):
+//     [bank_num:1][flag:1][name:16][pad:2]  (flag 0x01=normal, 0x03=named)
+//   Phase 2 — Bank config (when requested via GET_BANK_CONFIG):
+//     [bank_num:1][display_text:24][0x01][btn_slots:1][btn_count:1][exp_count:1][pad:1]
+//     then per-button blocks: [0x10][label:16][config:9 or 13 bytes]
+//       config 9b  (no-MIDI action): [mode:1][enabled:1][action:1][pad:3][target:1][pad:2]
+//       config 13b (MIDI):           [status:1][cc_num:1][value:1][flags:1][action:1][enabled:1][pad:7]
+//     tail: [0x10][16 nulls][9 zeroes][0x10][16 nulls][val1:1][val2:1]
+//
+// STATUS notify format (hdl 0x002d):
+//   First packet: [0x00][bank_num:1][bank_name:16][pad:2]  — current active bank
+//   ACK packets:  [bank_num:1][sub:1][sw_idx:1][val:1][cc_num:1][pad:3]
+// ═══════════════════════════════════════════════════════════════════
 
-// Hotone Ampero Control SysEx header (manufacturer: 00 21 27, device: 7F)
-const SYSEX_HDR = [0xF0, 0x00, 0x21, 0x27, 0x7F];
-const SYSEX_END = 0xF7;
+const AMPERO_SERVICE   = '36d70001-a25b-40fe-99a0-36453a1d8704'; // used as service filter too
+const CHAR_CMD_TX      = '36d70001-a25b-40fe-99a0-36453a1d8704'; // write commands here
+const CHAR_BANK_NAME   = '36d70002-a25b-40fe-99a0-36453a1d8704'; // bank names + config notifies
+const CHAR_STATUS      = '36d70003-a25b-40fe-99a0-36453a1d8704'; // status / ACK notifies
+const CHAR_SW_STATE    = '36d70006-a25b-40fe-99a0-36453a1d8704'; // footswitch state notifies
+
+// The BLE MIDI char is also present (OTA firmware update service)
+// but we don't use it for config — the proprietary service is what matters
 
 // ═══════════════════════════════════════════
 // State
 // ═══════════════════════════════════════════
 let bleDevice    = null;
-let bleChar      = null;
+let bleServer    = null;
+let charCmdTx    = null;   // write channel
+let charBankName = null;   // notify: bank names + config
+let charStatus   = null;   // notify: current bank / ACKs
+let charSwState  = null;   // notify: switch press events
 let connected    = false;
 let rxCount = 0, txCount = 0, errCount = 0;
 
-let banks = [];          // array of bank objects
+let banks = [];
 let currentBankIdx = -1;
 let currentSwIdx   = 0;
 let currentGroup   = 'A';
@@ -1280,6 +1318,15 @@ let isDirty = false;
 
 const SW_COLORS = ['var(--sw-a)', 'var(--sw-b)', 'var(--sw-c)', 'var(--sw-d)'];
 const SW_NAMES  = ['SW1', 'SW2', 'SW3', 'SW4'];
+
+// Dump state
+let _dumpPhase         = 'idle';  // 'idle' | 'names' | 'config' | 'done'
+let _dumpNamesReceived = 0;
+let _dumpNamesTotal    = 100;
+let _dumpConfigPending = -1;  // which bank config we're waiting for
+let _dumpConfigTimer   = null;
+let _dumpConfigResolve = null;
+let _dumpResults       = {};  // bankNum → bank object
 
 // ═══════════════════════════════════════════
 // Bank / Footswitch Data Model
@@ -1370,24 +1417,69 @@ async function connectBLE() {
   setConnecting();
   try {
     bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ name: 'Ampero Control' }, { namePrefix: 'Ampero' }],
-      optionalServices: [BLE_MIDI_SERVICE]
+      filters: [
+        { name: 'Ampero Control' },
+        { namePrefix: 'Ampero' },
+        { services: [AMPERO_SERVICE] }
+      ],
+      optionalServices: [
+        CHAR_CMD_TX, CHAR_BANK_NAME, CHAR_STATUS, CHAR_SW_STATE,
+        AMPERO_SERVICE
+      ]
     });
     bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
 
     log('sys', `Connecting to ${bleDevice.name}…`);
-    const server = await bleDevice.gatt.connect();
-    const service = await server.getPrimaryService(BLE_MIDI_SERVICE);
-    bleChar = await service.getCharacteristic(BLE_MIDI_CHAR);
+    bleServer = await bleDevice.gatt.connect();
 
-    await bleChar.startNotifications();
-    bleChar.addEventListener('characteristicvaluechanged', onMidiData);
+    // Discover the Ampero proprietary service
+    // The service UUID matches the first characteristic UUID prefix
+    let amperoService = null;
+    const services = await bleServer.getPrimaryServices();
+    for (const svc of services) {
+      const uuidStr = svc.uuid.toLowerCase();
+      if (uuidStr.startsWith('36d7')) {
+        amperoService = svc;
+        log('sys', `Found Ampero service: ${svc.uuid}`);
+        break;
+      }
+    }
+    if (!amperoService) {
+      throw new Error('Ampero proprietary service not found. Is this an Ampero Control?');
+    }
+
+    // Get all characteristics
+    const chars = await amperoService.getCharacteristics();
+    for (const c of chars) {
+      const u = c.uuid.toLowerCase();
+      log('sys', `Char: ${u} props: ${JSON.stringify(c.properties)}`);
+      if (u === CHAR_CMD_TX.toLowerCase())    charCmdTx    = c;
+      if (u === CHAR_BANK_NAME.toLowerCase()) charBankName = c;
+      if (u === CHAR_STATUS.toLowerCase())    charStatus   = c;
+      if (u === CHAR_SW_STATE.toLowerCase())  charSwState  = c;
+    }
+
+    if (!charCmdTx) throw new Error('CMD_TX characteristic not found');
+
+    // Subscribe to notifications
+    if (charBankName) {
+      await charBankName.startNotifications();
+      charBankName.addEventListener('characteristicvaluechanged', onBankNameNotify);
+    }
+    if (charStatus) {
+      await charStatus.startNotifications();
+      charStatus.addEventListener('characteristicvaluechanged', onStatusNotify);
+    }
+    if (charSwState) {
+      await charSwState.startNotifications();
+      charSwState.addEventListener('characteristicvaluechanged', onSwStateNotify);
+    }
 
     setConnected(bleDevice.name);
     log('sys', `Connected to ${bleDevice.name}`);
     toast(`Connected to ${bleDevice.name}`, 'ok');
 
-    // Auto-read all banks from device
+    // Start device dump
     await startDeviceDump();
 
   } catch (e) {
@@ -1400,9 +1492,7 @@ async function connectBLE() {
 }
 
 function disconnect() {
-  if (bleDevice && bleDevice.gatt.connected) {
-    bleDevice.gatt.disconnect();
-  }
+  if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
   setDisconnected();
 }
 
@@ -1410,6 +1500,406 @@ function onDisconnected() {
   setDisconnected();
   log('sys', 'Device disconnected');
   toast('Device disconnected', 'err');
+}
+
+// ═══════════════════════════════════════════
+// Low-level write to CMD_TX characteristic
+// ═══════════════════════════════════════════
+async function writeCmd(bytes) {
+  if (!charCmdTx) return false;
+  try {
+    await charCmdTx.writeValueWithoutResponse(new Uint8Array(bytes));
+    txCount++;
+    document.getElementById('txCount').textContent = txCount;
+    log('tx', 'CMD: ' + hexStr(bytes));
+    return true;
+  } catch (e) {
+    errCount++;
+    document.getElementById('errCount').textContent = errCount;
+    log('err', `TX error: ${e.message}`);
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════
+// Protocol commands (real, from HCI log)
+// ═══════════════════════════════════════════
+function cmdGetBankList()       { return writeCmd([0x00, 0x0A]); }
+function cmdGetBankConfig(n)    { return writeCmd([n & 0x7F, 0x06]); }
+function cmdSetBankParam(n, lo, hi, out) { return writeCmd([n & 0x7F, 0x01, lo, hi, out]); }
+function cmdSetSwitchState(n, swIdx, val) { return writeCmd([n & 0x7F, 0x03, swIdx, val]); }
+function cmdSetExpState(n, val) { return writeCmd([n & 0x7F, 0x08, val]); }
+
+// Legacy compatibility shim (used by sendToDevice)
+async function sendBLEMIDI(bytes) { return writeCmd(bytes); }
+
+// ═══════════════════════════════════════════
+// Incoming notification handlers
+// ═══════════════════════════════════════════
+function onBankNameNotify(event) {
+  const val = new Uint8Array(event.target.value.buffer);
+  rxCount++;
+  document.getElementById('rxCount').textContent = rxCount;
+  log('rx', `BANK_NAME (${val.length}b): ${hexStr(Array.from(val).slice(0, 20))}${val.length > 20 ? '…' : ''}`);
+  dispatchBankNamePacket(val);
+}
+
+function onStatusNotify(event) {
+  const val = new Uint8Array(event.target.value.buffer);
+  rxCount++;
+  document.getElementById('rxCount').textContent = rxCount;
+  log('rx', `STATUS (${val.length}b): ${hexStr(Array.from(val))}`);
+  dispatchStatusPacket(val);
+}
+
+function onSwStateNotify(event) {
+  const val = new Uint8Array(event.target.value.buffer);
+  rxCount++;
+  document.getElementById('rxCount').textContent = rxCount;
+  const swIdx = val[0] ?? 0;
+  log('rx', `SW_STATE: switch ${swIdx} pressed`);
+}
+
+// ═══════════════════════════════════════════
+// BANK_NAME packet dispatcher
+// ═══════════════════════════════════════════
+
+// Config blob reassembly — bank config arrives across multiple 20-byte notifies
+let _configBuf = null;  // null = not collecting, Uint8Array = collecting
+
+function dispatchBankNamePacket(val) {
+  // Phase 1: bank name list packets
+  // Format: [bank_num:1][flag:1][name:16][pad:2] — exactly 20 bytes
+  if (_dumpPhase === 'names' && val.length === 20 && (val[1] === 0x01 || val[1] === 0x03)) {
+    const bankNum = val[0];
+    const flag    = val[1];
+    const name    = decodeStr(val.slice(2, 18));
+    _dumpResults[bankNum] = {
+      ...(newBank(bankNum)),
+      name,
+      _flag: flag,
+      _configLoaded: false
+    };
+    _dumpNamesReceived++;
+    updateDumpProgress(_dumpNamesReceived, _dumpNamesTotal);
+
+    if (_dumpNamesReceived >= _dumpNamesTotal) {
+      log('sys', `All ${_dumpNamesTotal} bank names received`);
+      _dumpPhase = 'config';
+      startConfigDump();
+    }
+    return;
+  }
+
+  // Phase 2: bank config packets — may arrive in multiple 20-byte chunks
+  // First byte is the bank number (which is also the config marker)
+  if (_dumpPhase === 'config' || _dumpPhase === 'idle') {
+    // Start of a new config blob — first packet has display text starting at byte 1
+    if (_configBuf === null && val.length === 20 && _dumpConfigPending >= 0) {
+      _configBuf = val.slice();
+    } else if (_configBuf !== null) {
+      // Append continuation packet
+      const combined = new Uint8Array(_configBuf.length + val.length);
+      combined.set(_configBuf); combined.set(val, _configBuf.length);
+      _configBuf = combined;
+
+      // Detect end of config blob: last packet is 13 bytes (the tail)
+      if (val.length < 20) {
+        // Short final packet — config blob is complete
+        const blob = _configBuf;
+        _configBuf = null;
+        const bankNum = _dumpConfigPending;
+        parseBankConfigBlob(bankNum, blob);
+
+        // Resolve the waiting promise
+        clearTimeout(_dumpConfigTimer);
+        const resolve = _dumpConfigResolve;
+        _dumpConfigResolve = null;
+        _dumpConfigPending = -1;
+        if (resolve) resolve();
+      }
+    }
+  }
+}
+
+function dispatchStatusPacket(val) {
+  if (!val || val.length < 2) return;
+  if (val[0] === 0x00 && val.length >= 18) {
+    // Current active bank report: [0x00][bank_num:1][name:16]
+    const bankNum = val[1];
+    const name    = decodeStr(val.slice(2, 18));
+    log('sys', `Active bank: ${bankNum} "${name}"`);
+  }
+}
+
+// ═══════════════════════════════════════════
+// Bank config blob parser
+// (Real format from HCI log analysis)
+// ═══════════════════════════════════════════
+function parseBankConfigBlob(bankNum, blob) {
+  try {
+    // blob[0]    = bankNum (the marker byte)
+    // blob[1:25] = LCD display text (null-padded)
+    // blob[25]   = 0x01 separator
+    // blob[26]   = btn_slots (6)
+    // blob[27]   = btn_count (4 = number of footswitches)
+    // blob[28]   = exp_count (2 = number of expression inputs)
+    // blob[29]   = pad
+    // blob[30:]  = button blocks, each: 0x10 + 16-byte label + 9 or 13 byte config
+
+    const displayText = decodeStr(blob.slice(1, 25));
+    const btnSlots    = blob[26] ?? 6;
+    const btnCount    = blob[27] ?? 4;
+    const expCount    = blob[28] ?? 2;
+
+    log('sys', `Bank ${bankNum} config: display="${displayText}" btns=${btnCount} exp=${expCount}`);
+
+    // Parse 0x10-delimited button blocks
+    const buttons = [];
+    let i = 30;
+    while (i < blob.length - 1) {
+      if (blob[i] === 0x10 && i + 17 <= blob.length) {
+        const label = decodeStr(blob.slice(i + 1, i + 17));
+        // Find next 0x10 or end
+        let j = i + 17;
+        while (j < blob.length && blob[j] !== 0x10) j++;
+        const cfg = blob.slice(i + 17, j);
+        buttons.push({ label, cfg });
+        i = j;
+      } else { i++; }
+    }
+
+    // Map first btn_count real buttons (skip the tail null entries)
+    const realButtons = buttons.slice(0, btnCount);
+    const switches = realButtons.map((btn, idx) => {
+      const sw = newFootswitch();
+      sw.label = btn.label;
+      const cfg = btn.cfg;
+
+      if (cfg.length === 13 && cfg[0] !== 0x00) {
+        // Has MIDI message: [status:1][cc_num:1][value:1][flags:1][action:1][enabled:1][pad:7]
+        const status   = cfg[0];
+        const ccNum    = cfg[1];
+        const value    = cfg[2];
+        const msgType  = (status & 0xF0) === 0xB0 ? 'CC'
+                       : (status & 0xF0) === 0xC0 ? 'PC'
+                       : (status & 0xF0) === 0x90 ? 'NON'
+                       : (status & 0xF0) === 0x80 ? 'NOF' : 'CC';
+        const ch       = (status & 0x0F) + 1;
+        sw.mode        = cfg[3];  // flags/mode byte
+        sw.groupA      = [{ type: msgType, ch, data1: ccNum, data2: value }];
+        sw.groupB      = [];
+        sw.action      = cfg[4];
+      } else if (cfg.length >= 9) {
+        // No MIDI, internal action: [mode:1][enabled:1][action:1][pad:3][target:1][pad:2]
+        sw.mode        = cfg[0];
+        sw.action      = cfg[2];
+        sw.target      = cfg[5];
+        sw.groupA      = [];
+        sw.groupB      = [];
+      }
+      return sw;
+    });
+
+    // Pad to 4 switches if fewer
+    while (switches.length < 4) switches.push(newFootswitch());
+
+    // Update or create bank object
+    const existing = _dumpResults[bankNum] ?? newBank(bankNum);
+    existing.displayText = displayText;
+    existing.switches    = switches;
+    existing._configLoaded = true;
+    _dumpResults[bankNum] = existing;
+
+    log('sys', `Bank ${bankNum} parsed: ${realButtons.map(b => `"${b.label}"`).join(', ')}`);
+
+  } catch (err) {
+    log('err', `Bank ${bankNum} config parse error: ${err.message}`);
+  }
+}
+
+// ═══════════════════════════════════════════
+// Device Dump Engine
+// ═══════════════════════════════════════════
+const TOTAL_BANKS      = 100;
+const CONFIG_TIMEOUT   = 600;  // ms per bank config response
+
+async function startDeviceDump() {
+  _dumpPhase         = 'names';
+  _dumpNamesReceived = 0;
+  _dumpNamesTotal    = TOTAL_BANKS;
+  _dumpResults       = {};
+
+  showDumpProgress(0, TOTAL_BANKS);
+  log('sys', 'Requesting bank name list…');
+
+  // Send GET_BANK_LIST — device will respond with 100 notify packets on CHAR_BANK_NAME
+  await cmdGetBankList();
+
+  // The name list arrives as notifies; dispatchBankNamePacket() drives the rest
+  // We just wait here until finalised or cancelled
+  await new Promise(resolve => { _dumpConfigResolve = resolve; });
+}
+
+async function startConfigDump() {
+  log('sys', 'Requesting config for each bank…');
+  const bankNums = Object.keys(_dumpResults).map(Number).sort((a,b) => a-b);
+
+  for (const bn of bankNums) {
+    if (!connected) break;
+    await requestBankConfig(bn);
+    updateDumpProgress(bn + 1, TOTAL_BANKS);
+  }
+  finaliseDump();
+}
+
+function requestBankConfig(bankNum) {
+  return new Promise(async resolve => {
+    _dumpConfigPending = bankNum;
+    _dumpConfigResolve = resolve;
+    _configBuf = null;
+
+    await cmdGetBankConfig(bankNum);
+
+    // Timeout fallback
+    _dumpConfigTimer = setTimeout(() => {
+      log('sys', `Bank ${bankNum}: config timeout`);
+      _configBuf = null;
+      _dumpConfigPending = -1;
+      const r = _dumpConfigResolve;
+      _dumpConfigResolve = null;
+      if (r) r();
+    }, CONFIG_TIMEOUT);
+  });
+}
+
+// Also called by request dump button
+async function requestBankDump(bankNum) {
+  return cmdGetBankConfig(bankNum);
+}
+
+function finaliseDump() {
+  _dumpPhase = 'done';
+  hideDumpProgress();
+
+  if (Object.keys(_dumpResults).length === 0) {
+    log('sys', 'No banks received');
+    toast('Device did not respond — keeping local banks', 'err');
+    return;
+  }
+
+  const newBanks = [];
+  for (let i = 0; i < TOTAL_BANKS; i++) {
+    newBanks.push(_dumpResults[i] ?? newBank(i));
+  }
+  banks = newBanks;
+  currentBankIdx = -1;
+  renderBankList();
+  selectBank(0);
+
+  const parsed = Object.keys(_dumpResults).length;
+  log('sys', `Dump complete: ${parsed} banks loaded`);
+  toast(`✓ ${parsed} banks loaded from device`, 'ok');
+
+  // Resolve the top-level startDeviceDump promise if still pending
+  if (_dumpConfigResolve) { _dumpConfigResolve(); _dumpConfigResolve = null; }
+}
+
+async function readFromDevice() {
+  if (!connected) { toast('Not connected', 'err'); return; }
+  await startDeviceDump();
+}
+
+// ═══════════════════════════════════════════
+// Send bank config back to device
+// ═══════════════════════════════════════════
+async function sendToDevice() {
+  if (!connected || currentBankIdx < 0) return;
+  saveBank();
+  const bank = banks[currentBankIdx];
+  const bn   = bank.number;
+
+  // For each footswitch, send SET_SWITCH_STATE
+  for (let s = 0; s < 4; s++) {
+    const sw  = bank.switches[s];
+    const msg = sw.groupA[0];
+    if (msg) {
+      // Send the MIDI message details back via SET_BANK_PARAM
+      // Structure: [bankNum, 0x01, cc_or_pc_num, status_byte, outputType]
+      const status = msg.type === 'CC'  ? (0xB0 | (msg.ch-1))
+                   : msg.type === 'PC'  ? (0xC0 | (msg.ch-1))
+                   : msg.type === 'NON' ? (0x90 | (msg.ch-1))
+                   :                     (0x80 | (msg.ch-1));
+      await cmdSetBankParam(bn, msg.data1, status, bank.outputTo);
+      await sleep(30);
+    }
+  }
+
+  log('tx', `Bank ${bn} config sent`);
+  toast(`Bank ${bn} sent to device`, 'ok');
+  bank.dirty = false;
+  renderBankList();
+}
+
+// ═══════════════════════════════════════════
+// Encoding helpers (kept for JSON export compat)
+// ═══════════════════════════════════════════
+function buildBankSysEx(bank) {
+  // Build a human-readable config blob matching real device format
+  // bank_num + display(24) + 0x01 + header(4) + buttons
+  const enc  = [];
+  enc.push(bank.number & 0x7F);
+  const disp = strToBytes(bank.name, 24);
+  enc.push(...disp);
+  enc.push(0x01);
+  enc.push(6, 4, 2, 0);  // btn_slots, btn_count, exp_count, pad
+
+  for (let s = 0; s < 4; s++) {
+    const sw  = bank.switches[s];
+    const lbl = strToBytes(sw.label || `SW${s+1}`, 16);
+    enc.push(0x10, ...lbl);
+    const msg = sw.groupA[0];
+    if (msg) {
+      const status = msg.type === 'CC' ? (0xB0|(msg.ch-1))
+                   : msg.type === 'PC' ? (0xC0|(msg.ch-1))
+                   : msg.type === 'NON'? (0x90|(msg.ch-1)) : (0x80|(msg.ch-1));
+      enc.push(status, msg.data1, msg.data2, sw.mode ?? 0x01, 0x00, 0x01,
+               0,0,0,0,0,0,0);  // 13-byte MIDI block
+    } else {
+      enc.push(0x00, 0x01, sw.action ?? 0x00, 0,0,0, sw.target ?? 0x00, 0,0); // 9-byte no-MIDI
+    }
+  }
+  return enc;
+}
+
+function encodeMidiMsg(msg) {
+  const typeMap = { 'PC': 0, 'CC': 1, 'NON': 2, 'NOF': 3 };
+  return [(typeMap[msg.type] ?? 0) & 0x7F, (msg.ch-1) & 0x7F, msg.data1 & 0x7F, msg.data2 & 0x7F];
+}
+
+function encodeExpPedal(exp) {
+  const curveMap = {linear:0,log:1,exp:2,scurve:3,reverse:4};
+  const msgMap   = {CC:0,PC:1,PB:2,AT:3,NON:4};
+  return [exp.enabled?1:0, exp.source&0x7F, (exp.midiChannel-1)&0x7F,
+          (msgMap[exp.msgType]??0)&0x7F, exp.ccNum&0x7F, exp.minVal&0x7F,
+          exp.maxVal&0x7F, exp.deadzone&0x7F, (curveMap[exp.curve]??0)&0x7F,
+          exp.invert&0x7F, exp.smoothing&0x7F, exp.toeMessages.length&0x7F,
+          ...exp.toeMessages.flatMap(m => encodeMidiMsg(m))];
+}
+
+// ═══════════════════════════════════════════
+// String helpers
+// ═══════════════════════════════════════════
+function decodeStr(bytes) {
+  return Array.from(bytes).map(b => b ? String.fromCharCode(b) : '').join('').replace(/\0/g,'').trim();
+}
+function strToBytes(str, len) {
+  const out = new Array(len).fill(0);
+  for (let i = 0; i < Math.min(str.length, len); i++) out[i] = str.charCodeAt(i) & 0x7F;
+  return out;
+}
+function hexStr(bytes) {
+  return bytes.map(b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
 }
 
 function setConnecting() {
@@ -1442,300 +1932,10 @@ function setDisconnected() {
   document.getElementById('sendBtn').disabled = true;
   document.getElementById('readDeviceBtn').disabled = true;
   // Stop any dump in progress
-  if (_dumpInProgress) cancelDump();
+  if (_dumpPhase !== 'idle' && _dumpPhase !== 'done') cancelDump();
 }
 
-// ═══════════════════════════════════════════
-// SysEx Reassembly Buffer
-// BLE MIDI splits long SysEx across packets.
-// We accumulate until we see F7.
-// ═══════════════════════════════════════════
-let _sysexBuf = [];        // accumulates bytes across BLE packets
-let _sysexActive = false;  // are we mid-SysEx?
-
-function onMidiData(event) {
-  const data = new Uint8Array(event.target.value.buffer);
-  rxCount++;
-  document.getElementById('rxCount').textContent = rxCount;
-
-  if (data.length < 2) return;
-
-  // BLE MIDI packet layout:
-  //   byte 0: header    (MSB set, 6-bit timestamp high)
-  //   byte 1: timestamp (MSB set, 7-bit timestamp low)  — may repeat inside for Running Status
-  // We walk the payload from byte 1 onwards, stripping timestamp bytes (MSB set, not a status).
-  let i = 1; // skip BLE header byte
-
-  while (i < data.length) {
-    const b = data[i];
-
-    // Timestamp byte embedded in stream (MSB set, appears before each status in multi-msg packets)
-    if ((b & 0x80) && !_sysexActive && i > 1) { i++; continue; }
-
-    if (_sysexActive) {
-      if (b === 0xF7) {
-        _sysexBuf.push(0xF7);
-        _sysexActive = false;
-        const complete = _sysexBuf.slice();
-        _sysexBuf = [];
-        handleSysEx(complete);
-        log('rx', 'SysEx(' + complete.length + '): ' + hexStr(complete.slice(0, Math.min(complete.length, 16))) + (complete.length > 16 ? '…' : ''));
-      } else if (!(b & 0x80)) {
-        // Data byte inside SysEx (MSB must be 0)
-        _sysexBuf.push(b);
-      }
-      // Ignore any 0x80+ bytes mid-SysEx except F7 (those are BLE timestamps)
-      i++;
-      continue;
-    }
-
-    if (b === 0xF0) {
-      _sysexActive = true;
-      _sysexBuf = [0xF0];
-      i++; continue;
-    }
-
-    // Regular MIDI messages
-    const msgType = b & 0xF0;
-    const ch = (b & 0x0F) + 1;
-    if (msgType === 0xC0 && i+1 < data.length) {
-      log('rx', `PC ch:${ch} prog:${data[i+1]}`); i += 2;
-    } else if (msgType === 0xB0 && i+2 < data.length) {
-      log('rx', `CC ch:${ch} #${data[i+1]} val:${data[i+2]}`); i += 3;
-    } else if (msgType === 0x90 && i+2 < data.length) {
-      log('rx', `NoteOn ch:${ch} n:${data[i+1]} v:${data[i+2]}`); i += 3;
-    } else if (msgType === 0x80 && i+2 < data.length) {
-      log('rx', `NoteOff ch:${ch} n:${data[i+1]}`); i += 3;
-    } else { i++; }
-  }
-}
-
-// ═══════════════════════════════════════════
-// SysEx Dispatcher
-// ═══════════════════════════════════════════
-function handleSysEx(bytes) {
-  if (bytes.length < 6) return;
-  // Validate Hotone header: F0 00 21 27 7F <cmd>
-  if (!(bytes[0] === 0xF0 && bytes[1] === 0x00 &&
-        bytes[2] === 0x21 && bytes[3] === 0x27)) return;
-
-  const cmd = bytes[5];
-  log('sys', `Hotone SysEx cmd:0x${cmd.toString(16).toUpperCase()} len:${bytes.length}`);
-
-  if (cmd === 0x02) {
-    // Bank data dump response (mirrors our buildBankSysEx format)
-    parseBankSysEx(bytes);
-  } else if (cmd === 0x03) {
-    // All-banks dump complete acknowledgement
-    onDumpComplete();
-  } else if (cmd === 0x7F) {
-    // Device identity / capability response
-    log('sys', `Device identity: ${hexStr(bytes.slice(6, bytes.length-1))}`);
-  }
-}
-
-// ═══════════════════════════════════════════
-// Device Dump Engine
-// ═══════════════════════════════════════════
-const TOTAL_BANKS      = 100;  // Ampero Control supports up to 100 banks
-const DUMP_TIMEOUT_MS  = 400;  // ms to wait for each bank response
-const DUMP_BATCH_SIZE  = 1;    // request 1 at a time to avoid flooding BLE
-
-let _dumpInProgress  = false;
-let _dumpBanksParsed = 0;
-let _dumpBanksExpected = 0;
-let _dumpResults     = {};   // bankNum → parsed bank object
-let _dumpTimer       = null;
-let _dumpCurrentReq  = -1;
-let _dumpResolve     = null;
-
-async function startDeviceDump() {
-  if (_dumpInProgress) return;
-
-  // First send an identity request to check device is responsive
-  // F0 00 21 27 7F 00 F7  (cmd 00 = identity)
-  await sendBLEMIDI([...SYSEX_HDR, 0x00, SYSEX_END]);
-  await sleep(80);
-
-  // Request all 100 banks sequentially
-  _dumpInProgress   = true;
-  _dumpBanksParsed  = 0;
-  _dumpBanksExpected = TOTAL_BANKS;
-  _dumpResults      = {};
-
-  showDumpProgress(0, TOTAL_BANKS);
-  log('sys', `Starting full device dump (${TOTAL_BANKS} banks)…`);
-
-  for (let bn = 0; bn < TOTAL_BANKS; bn++) {
-    if (!connected) break;
-    _dumpCurrentReq = bn;
-    await requestBankDump(bn);
-    await waitForBankResponse(bn);
-    updateDumpProgress(bn + 1, TOTAL_BANKS);
-  }
-
-  finaliseDump();
-}
-
-// Wait for bank `num` to arrive, with timeout fallback
-function waitForBankResponse(num) {
-  return new Promise(resolve => {
-    _dumpResolve = resolve;
-    _dumpTimer = setTimeout(() => {
-      // Timed out — create a blank bank so we don't stall
-      if (!_dumpResults[num]) {
-        _dumpResults[num] = newBank(num);
-        log('sys', `Bank ${num}: no response, using default`);
-      }
-      _dumpResolve = null;
-      resolve();
-    }, DUMP_TIMEOUT_MS);
-  });
-}
-
-function parseBankSysEx(bytes) {
-  // Layout (mirrors buildBankSysEx):
-  // [0]  F0
-  // [1..4] 00 21 27 7F   (Hotone header)
-  // [5]  cmd  (0x02)
-  // [6]  bank number
-  // [7]  outputTo
-  // [8]  midiChannel (0-based)
-  // [9..N] switches × 4:
-  //          mode (1)
-  //          groupA_len (1)
-  //          groupA msgs × 4 bytes each
-  //          groupB_len (1)
-  //          groupB msgs × 4 bytes each
-  // [N+1..] expPedals × 2:
-  //          enabled, source, midiCh, msgType, ccNum,
-  //          minVal, maxVal, deadzone, curve, invert, smoothing,
-  //          toeMsg_len, toeMsg × 4 bytes each
-  // [last] F7
-
-  try {
-    let p = 6; // parse cursor
-    const safe = (n = 1) => { if (p + n > bytes.length - 1) throw new Error('underflow'); };
-
-    safe();
-    const bankNum  = bytes[p++];
-    safe(); const outputTo    = bytes[p++];
-    safe(); const midiChannel = bytes[p++] + 1;
-
-    const switches = [];
-    for (let s = 0; s < 4; s++) {
-      safe(); const mode    = bytes[p++];
-      safe(); const lenA    = bytes[p++];
-      const groupA = [];
-      for (let m = 0; m < lenA; m++) { safe(4); groupA.push(decodeMidiMsg(bytes, p)); p += 4; }
-      safe(); const lenB    = bytes[p++];
-      const groupB = [];
-      for (let m = 0; m < lenB; m++) { safe(4); groupB.push(decodeMidiMsg(bytes, p)); p += 4; }
-      switches.push({ mode, groupA, groupB });
-    }
-
-    const expPedals = [];
-    for (let e = 0; e < 2; e++) {
-      safe(12);
-      const ep = {
-        slot:        e,
-        enabled:     bytes[p++] === 1,
-        source:      bytes[p++],
-        midiChannel: bytes[p++] + 1,
-        msgType:     (['CC','PC','PB','AT','NON'])[bytes[p++]] ?? 'CC',
-        ccNum:       bytes[p++],
-        minVal:      bytes[p++],
-        maxVal:      bytes[p++],
-        deadzone:    bytes[p++],
-        curve:       (['linear','log','exp','scurve','reverse'])[bytes[p++]] ?? 'linear',
-        invert:      bytes[p++],
-        smoothing:   bytes[p++],
-        toeMessages: []
-      };
-      safe(); const toeLen = bytes[p++];
-      for (let m = 0; m < toeLen; m++) { safe(4); ep.toeMessages.push(decodeMidiMsg(bytes, p)); p += 4; }
-      expPedals.push(ep);
-    }
-
-    // Pad expPedals to 2 if device sent fewer
-    while (expPedals.length < 2) expPedals.push(newExpPedal(expPedals.length));
-
-    const bank = {
-      name:        `Bank ${String(bankNum).padStart(2,'0')}`,
-      number:      bankNum,
-      outputTo,
-      midiChannel,
-      switches,
-      expPedals,
-      dirty:       false
-    };
-
-    _dumpResults[bankNum] = bank;
-    _dumpBanksParsed++;
-    log('sys', `Bank ${bankNum} parsed OK (${p - 6} bytes)`);
-
-  } catch (err) {
-    log('err', `Bank parse error: ${err.message}`);
-  }
-
-  // Resolve the pending waitForBankResponse promise
-  if (_dumpCurrentReq >= 0 && _dumpResolve) {
-    clearTimeout(_dumpTimer);
-    const resolve = _dumpResolve;
-    _dumpResolve = null;
-    resolve();
-  }
-}
-
-function decodeMidiMsg(bytes, offset) {
-  const typeMap = ['PC','CC','NON','NOF'];
-  return {
-    type:  typeMap[bytes[offset]]   ?? 'PC',
-    ch:    (bytes[offset+1] & 0x7F) + 1,
-    data1: bytes[offset+2] & 0x7F,
-    data2: bytes[offset+3] & 0x7F
-  };
-}
-
-function finaliseDump() {
-  _dumpInProgress = false;
-  hideDumpProgress();
-
-  if (Object.keys(_dumpResults).length === 0) {
-    log('sys', 'No banks received from device — keeping local banks');
-    toast('Device did not respond to dump request', 'err');
-    return;
-  }
-
-  // Rebuild banks array from parsed results, fill gaps with blank banks
-  const newBanks = [];
-  for (let i = 0; i < TOTAL_BANKS; i++) {
-    newBanks.push(_dumpResults[i] ?? newBank(i));
-  }
-  banks = newBanks;
-  currentBankIdx = -1;
-  renderBankList();
-  selectBank(0);
-
-  const parsed = Object.keys(_dumpResults).length;
-  log('sys', `Dump complete: ${parsed}/${TOTAL_BANKS} banks loaded from device`);
-  toast(`✓ ${parsed} banks loaded from device`, 'ok');
-}
-
-function onDumpComplete() {
-  // Device sent explicit "dump done" — finalise early
-  if (_dumpInProgress) finaliseDump();
-}
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// ═══════════════════════════════════════════
-// Dump Progress UI
-// ═══════════════════════════════════════════
-function showDumpProgress(done, total) {
-  // Spin the header button icon
-  const icon = document.getElementById('readDeviceIcon');
-  if (icon) icon.classList.add('spinning');
+function setConnecting() {
   let el = document.getElementById('dumpProgress');
   if (!el) {
     el = document.createElement('div');
@@ -1799,9 +1999,9 @@ function hideDumpProgress() {
 }
 
 function cancelDump() {
-  _dumpInProgress = false;
-  clearTimeout(_dumpTimer);
-  if (_dumpResolve) { _dumpResolve(); _dumpResolve = null; }
+  _dumpPhase = 'idle';
+  clearTimeout(_dumpConfigTimer);
+  if (_dumpConfigResolve) { _dumpConfigResolve(); _dumpConfigResolve = null; }
   hideDumpProgress();
   log('sys', 'Device dump cancelled by user');
   toast('Dump skipped — using local banks', '');
