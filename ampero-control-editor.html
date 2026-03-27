@@ -1,0 +1,2705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ampero Control Editor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Rajdhani:wght@300;400;500;600;700&display=swap');
+
+  :root {
+    --bg:        #0d0f12;
+    --panel:     #141720;
+    --panel2:    #1a1e2a;
+    --border:    #252a38;
+    --accent:    #00d4ff;
+    --accent2:   #ff6b35;
+    --green:     #00ff9d;
+    --red:       #ff3b5c;
+    --yellow:    #ffd700;
+    --text:      #c8d0e0;
+    --text-dim:  #5a6070;
+    --text-bright:#ffffff;
+    --sw-a:      #00d4ff;
+    --sw-b:      #ff6b35;
+    --sw-c:      #00ff9d;
+    --sw-d:      #a855f7;
+    --radius:    6px;
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-ui:   'Rajdhani', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px);
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ─── Header ─── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+
+  .logo {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .logo-device {
+    width: 44px; height: 22px;
+    background: linear-gradient(135deg, #222838, #1a1e2a);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    gap: 4px; padding: 4px;
+  }
+  .logo-btn {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: background 0.2s;
+  }
+  .logo-btn.a { background: var(--sw-a); box-shadow: 0 0 6px var(--sw-a); }
+  .logo-title {
+    font-size: 20px; font-weight: 700; letter-spacing: 2px;
+    color: var(--text-bright);
+  }
+  .logo-title span { color: var(--accent); }
+  .logo-version {
+    font-family: var(--font-mono);
+    font-size: 10px; color: var(--text-dim);
+    background: var(--border); border-radius: 3px; padding: 2px 6px;
+  }
+
+  .header-controls { display: flex; align-items: center; gap: 12px; }
+
+  /* ─── Connect Button ─── */
+  #connectBtn {
+    font-family: var(--font-ui);
+    font-size: 14px; font-weight: 600; letter-spacing: 1px;
+    padding: 9px 20px;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #connectBtn:hover { background: var(--accent); color: var(--bg); }
+  #connectBtn.connected { color: var(--green); border-color: var(--green); }
+  #connectBtn.connected:hover { background: var(--green); color: var(--bg); }
+  #connectBtn.connecting { color: var(--yellow); border-color: var(--yellow); animation: pulse-border 1s infinite; }
+
+  @keyframes pulse-border {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .ble-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor;
+    display: inline-block;
+  }
+  .ble-dot.blink { animation: blink 1s infinite; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+  #statusBadge {
+    font-family: var(--font-mono);
+    font-size: 11px; padding: 4px 10px;
+    border-radius: 20px;
+    background: var(--border);
+    color: var(--text-dim);
+  }
+  #statusBadge.ok { background: rgba(0,255,157,0.1); color: var(--green); }
+  #statusBadge.err { background: rgba(255,59,92,0.1); color: var(--red); }
+
+  /* ─── Layout ─── */
+  .workspace {
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    grid-template-rows: auto 1fr;
+    gap: 0;
+    height: calc(100vh - 57px);
+  }
+
+  /* ─── Sidebar – Bank List ─── */
+  .sidebar {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-header {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-title {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--text-dim); font-weight: 600;
+  }
+  .bank-count { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+
+  .bank-list {
+    flex: 1; overflow-y: auto; padding: 8px;
+  }
+  .bank-list::-webkit-scrollbar { width: 4px; }
+  .bank-list::-webkit-scrollbar-track { background: transparent; }
+  .bank-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .bank-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-bottom: 2px;
+    border: 1px solid transparent;
+  }
+  .bank-item:hover { background: var(--panel2); }
+  .bank-item.active {
+    background: rgba(0,212,255,0.08);
+    border-color: rgba(0,212,255,0.25);
+  }
+  .bank-num {
+    font-family: var(--font-mono);
+    font-size: 12px; font-weight: 700;
+    color: var(--accent); min-width: 28px;
+    opacity: 0.7;
+  }
+  .bank-item.active .bank-num { opacity: 1; }
+  .bank-name {
+    font-size: 14px; font-weight: 500;
+    color: var(--text);
+    flex: 1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bank-item.active .bank-name { color: var(--text-bright); }
+  .bank-dirty {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent2);
+    display: none;
+  }
+  .bank-dirty.show { display: block; }
+
+  .sidebar-footer {
+    padding: 12px;
+    border-top: 1px solid var(--border);
+    display: flex; gap: 8px;
+  }
+  .btn-sm {
+    flex: 1;
+    font-family: var(--font-ui); font-size: 12px; font-weight: 600; letter-spacing: 1px;
+    padding: 7px 0;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-sm:hover { border-color: var(--accent); color: var(--accent); background: rgba(0,212,255,0.05); }
+  .btn-sm.danger:hover { border-color: var(--red); color: var(--red); background: rgba(255,59,92,0.05); }
+
+  /* ─── Main Editor ─── */
+  .main-editor {
+    background: var(--bg);
+    overflow-y: auto;
+    padding: 24px;
+    display: flex; flex-direction: column; gap: 24px;
+  }
+
+  .editor-top {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 20px;
+  }
+  .bank-info { flex: 1; }
+  .bank-info-label {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--text-dim); margin-bottom: 8px;
+  }
+  .bank-name-input {
+    font-family: var(--font-ui); font-size: 22px; font-weight: 600;
+    background: transparent; border: none;
+    color: var(--text-bright);
+    border-bottom: 1px solid var(--border);
+    padding: 4px 0;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .bank-name-input:focus { border-color: var(--accent); }
+
+  .bank-actions { display: flex; gap: 8px; padding-top: 24px; }
+  .btn-action {
+    font-family: var(--font-ui); font-size: 13px; font-weight: 600; letter-spacing: 1px;
+    padding: 9px 18px;
+    border-radius: var(--radius);
+    border: 1px solid;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .btn-save {
+    background: var(--accent); color: var(--bg);
+    border-color: var(--accent);
+  }
+  .btn-save:hover { background: #00bde6; }
+  .btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-send {
+    background: transparent; color: var(--accent2);
+    border-color: var(--accent2);
+  }
+  .btn-send:hover { background: var(--accent2); color: var(--bg); }
+  .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ─── Device Visual ─── */
+  .device-visual {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .device-display {
+    background: #0a0c0f;
+    border: 1px solid #1a1e2a;
+    border-radius: 6px;
+    height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 22px; font-weight: 700;
+    color: var(--accent);
+    text-shadow: 0 0 12px var(--accent);
+    letter-spacing: 6px;
+  }
+  .footswitches {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  }
+  .footswitch-btn {
+    aspect-ratio: 1;
+    border-radius: 8px;
+    border: 2px solid var(--border);
+    background: var(--panel2);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    padding: 8px;
+    position: relative;
+  }
+  .footswitch-btn::before {
+    content: '';
+    position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+    width: 20px; height: 4px;
+    border-radius: 2px;
+    background: var(--sw-color, var(--text-dim));
+    opacity: 0.6;
+    transition: opacity 0.15s;
+  }
+  .footswitch-btn:hover::before { opacity: 1; }
+  .footswitch-btn.active {
+    border-color: var(--sw-color, var(--accent));
+    background: rgba(var(--sw-rgb, 0,212,255), 0.08);
+    box-shadow: 0 0 20px rgba(var(--sw-rgb, 0,212,255), 0.15);
+  }
+  .footswitch-btn:hover {
+    border-color: var(--sw-color, var(--accent));
+  }
+  .sw-label {
+    font-size: 16px; font-weight: 700; letter-spacing: 1px;
+    color: var(--text-bright);
+  }
+  .sw-count {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  /* ─── Footswitch Editor ─── */
+  .sw-editor {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .sw-editor-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sw-color-bar {
+    width: 4px; height: 20px; border-radius: 2px;
+    background: var(--sw-active-color, var(--accent));
+  }
+  .sw-editor-title {
+    font-size: 15px; font-weight: 600; color: var(--text-bright);
+    flex: 1;
+  }
+  .sw-tabs {
+    display: flex; gap: 2px;
+    background: var(--panel2);
+    border-radius: 6px; padding: 3px;
+  }
+  .sw-tab {
+    font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+    padding: 5px 14px;
+    border-radius: 4px;
+    border: none; background: transparent;
+    color: var(--text-dim); cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.5px;
+  }
+  .sw-tab.active { background: var(--panel); color: var(--text-bright); }
+
+  .sw-settings {
+    padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+
+  .field-row {
+    display: grid; grid-template-columns: 120px 1fr;
+    align-items: center; gap: 12px;
+  }
+  .field-label {
+    font-size: 12px; font-weight: 600; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--text-dim);
+  }
+  .field-control select,
+  .field-control input[type=number],
+  .field-control input[type=text] {
+    font-family: var(--font-mono); font-size: 13px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    color: var(--text-bright);
+    border-radius: var(--radius);
+    padding: 7px 10px;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.15s;
+    appearance: none;
+  }
+  .field-control select:focus,
+  .field-control input:focus { border-color: var(--accent); }
+
+  .select-wrap { position: relative; }
+  .select-wrap::after {
+    content: '▾';
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    color: var(--text-dim); pointer-events: none; font-size: 12px;
+  }
+
+  /* ─── MIDI Message List ─── */
+  .midi-list-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 18px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  .midi-list-title {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-dim);
+  }
+  .btn-add-msg {
+    font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+    padding: 5px 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: transparent; color: var(--accent);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .btn-add-msg:hover { background: rgba(0,212,255,0.08); border-color: var(--accent); }
+
+  .midi-messages {
+    padding: 10px 18px;
+    display: flex; flex-direction: column; gap: 8px;
+    max-height: 300px; overflow-y: auto;
+  }
+  .midi-messages::-webkit-scrollbar { width: 4px; }
+  .midi-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .midi-msg {
+    display: grid; align-items: center; gap: 8px;
+    padding: 8px 10px;
+    background: var(--panel2);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    transition: border-color 0.15s;
+    grid-template-columns: 90px 60px 60px 60px 1fr 28px;
+  }
+  .midi-msg:hover { border-color: rgba(0,212,255,0.2); }
+  .midi-msg select, .midi-msg input[type=number] {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text-bright); border-radius: 4px;
+    padding: 4px 6px; width: 100%;
+    outline: none; appearance: none;
+  }
+  .midi-msg select:focus, .midi-msg input:focus { border-color: var(--accent); }
+  .msg-type-badge {
+    font-size: 11px; font-weight: 700; letter-spacing: 1px;
+    padding: 3px 6px; border-radius: 3px;
+    text-align: center;
+  }
+  .type-PC  { background: rgba(0,212,255,0.15); color: var(--accent); }
+  .type-CC  { background: rgba(255,107,53,0.15); color: var(--accent2); }
+  .type-NON { background: rgba(0,255,157,0.15); color: var(--green); }
+  .type-NOF { background: rgba(168,85,247,0.15); color: #a855f7; }
+  .btn-del {
+    background: transparent; border: none;
+    color: var(--text-dim); cursor: pointer;
+    font-size: 14px; padding: 2px;
+    transition: color 0.15s;
+  }
+  .btn-del:hover { color: var(--red); }
+
+  /* ─── Right Panel – MIDI Monitor ─── */
+  .monitor-panel {
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+  }
+  .monitor-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .monitor-title {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-dim);
+  }
+  .btn-clear {
+    font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+    padding: 4px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: transparent; color: var(--text-dim);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .btn-clear:hover { border-color: var(--red); color: var(--red); }
+
+  .monitor-log {
+    flex: 1; overflow-y: auto;
+    padding: 8px;
+    font-family: var(--font-mono); font-size: 11px;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .monitor-log::-webkit-scrollbar { width: 4px; }
+  .monitor-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .log-entry {
+    display: grid; grid-template-columns: 55px 1fr;
+    gap: 8px; align-items: start;
+    padding: 4px 6px; border-radius: 4px;
+    animation: fadeIn 0.2s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } }
+  .log-entry:hover { background: var(--panel2); }
+  .log-time { color: var(--text-dim); font-size: 10px; padding-top: 1px; }
+  .log-data { color: var(--text); word-break: break-all; }
+  .log-data.rx { color: var(--green); }
+  .log-data.tx { color: var(--accent); }
+  .log-data.sys { color: var(--yellow); }
+  .log-data.err { color: var(--red); }
+
+  .monitor-stats {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between;
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+  }
+
+  /* ─── No device placeholder ─── */
+  .no-device {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; height: 100%;
+    color: var(--text-dim);
+  }
+  .no-device-icon {
+    font-size: 48px; opacity: 0.3;
+  }
+  .no-device h3 {
+    font-size: 16px; font-weight: 600; color: var(--text-dim);
+  }
+  .no-device p { font-size: 13px; text-align: center; max-width: 260px; line-height: 1.6; }
+  .no-device-hint {
+    font-family: var(--font-mono); font-size: 11px;
+    background: var(--panel2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 8px 14px;
+    color: var(--text-dim);
+  }
+
+  /* ─── Global settings panel ─── */
+  .global-panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;
+  }
+  .global-field { display: flex; flex-direction: column; gap: 6px; }
+  .global-label {
+    font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim);
+    font-weight: 600;
+  }
+  .global-field select, .global-field input {
+    font-family: var(--font-mono); font-size: 13px;
+    background: var(--panel2); border: 1px solid var(--border);
+    color: var(--text-bright); border-radius: var(--radius);
+    padding: 7px 10px; width: 100%;
+    outline: none; appearance: none;
+    transition: border-color 0.15s;
+  }
+  .global-field select:focus, .global-field input:focus { border-color: var(--accent); }
+
+  .section-label {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--text-dim); font-weight: 600;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header-divider {
+    width: 1px; height: 22px;
+    background: var(--border);
+  }
+
+  .btn-io {
+    font-family: var(--font-ui);
+    font-size: 13px; font-weight: 600; letter-spacing: 0.8px;
+    padding: 8px 14px;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .btn-io:hover {
+    color: var(--text-bright);
+    border-color: rgba(200,208,224,0.3);
+    background: rgba(255,255,255,0.04);
+  }
+  .btn-io.export:hover {
+    color: var(--yellow);
+    border-color: var(--yellow);
+    background: rgba(255,215,0,0.06);
+  }
+  .btn-io.read-device { color: var(--text-dim); }
+  .btn-io.read-device:not(:disabled):hover {
+    color: var(--green);
+    border-color: var(--green);
+    background: rgba(0,255,157,0.06);
+  }
+  .btn-io.read-device:disabled { opacity: 0.35; cursor: not-allowed; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinning { animation: spin 0.9s linear infinite; display:inline-block; }
+
+  /* ─── Import overlay modal ─── */
+  #importModal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(4px);
+    z-index: 500;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  #importModal.show { opacity: 1; pointer-events: all; }
+
+  .import-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 460px; max-width: 92vw;
+    overflow: hidden;
+    transform: translateY(12px);
+    transition: transform 0.25s;
+  }
+  #importModal.show .import-card { transform: translateY(0); }
+
+  .import-card-header {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .import-card-title {
+    font-size: 15px; font-weight: 700; letter-spacing: 1px;
+    color: var(--text-bright);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .import-card-title span { color: var(--accent); font-size: 18px; }
+  .btn-close-modal {
+    background: transparent; border: none;
+    color: var(--text-dim); font-size: 18px; cursor: pointer;
+    transition: color 0.15s; line-height: 1;
+  }
+  .btn-close-modal:hover { color: var(--red); }
+
+  .import-card-body { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+
+  .import-drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 32px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .import-drop-zone:hover,
+  .import-drop-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(0,212,255,0.04);
+  }
+  .import-drop-icon { font-size: 32px; opacity: 0.5; }
+  .import-drop-text { font-size: 14px; color: var(--text-dim); }
+  .import-drop-text strong { color: var(--accent); }
+  .import-drop-hint {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--text-dim); letter-spacing: 1px;
+  }
+
+  .import-merge-options {
+    background: var(--panel2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .import-merge-label {
+    font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--text-dim); font-weight: 600;
+  }
+  .radio-option {
+    display: flex; align-items: center; gap: 10px;
+    cursor: pointer; padding: 7px 10px;
+    border-radius: 5px; transition: background 0.15s;
+  }
+  .radio-option:hover { background: rgba(255,255,255,0.04); }
+  .radio-option input[type=radio] { accent-color: var(--accent); width: 14px; height: 14px; }
+  .radio-option-text { font-size: 13px; color: var(--text); }
+  .radio-option-text small { display: block; font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+
+  .import-preview {
+    background: var(--panel2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-dim); display: none;
+    gap: 6px; flex-direction: column;
+  }
+  .import-preview.show { display: flex; }
+  .import-preview-row { display: flex; justify-content: space-between; }
+  .import-preview-key { color: var(--text-dim); }
+  .import-preview-val { color: var(--accent); font-weight: 700; }
+
+  .import-card-footer {
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    display: flex; gap: 10px; justify-content: flex-end;
+  }
+  .btn-cancel {
+    font-family: var(--font-ui); font-size: 13px; font-weight: 600;
+    padding: 9px 18px; border-radius: var(--radius);
+    border: 1px solid var(--border); background: transparent;
+    color: var(--text-dim); cursor: pointer; transition: all 0.15s;
+  }
+  .btn-cancel:hover { border-color: var(--text-dim); color: var(--text); }
+  .btn-confirm-import {
+    font-family: var(--font-ui); font-size: 13px; font-weight: 600;
+    padding: 9px 20px; border-radius: var(--radius);
+    border: 1px solid var(--accent); background: var(--accent);
+    color: var(--bg); cursor: pointer; transition: all 0.15s;
+    opacity: 0.4; pointer-events: none;
+  }
+  .btn-confirm-import.ready { opacity: 1; pointer-events: all; }
+  .btn-confirm-import.ready:hover { background: #00bde6; border-color: #00bde6; }
+  #toast {
+    position: fixed; bottom: 24px; right: 24px;
+    font-family: var(--font-mono); font-size: 12px;
+    padding: 10px 18px; border-radius: var(--radius);
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--text);
+    transform: translateY(60px); opacity: 0;
+    transition: all 0.3s;
+    z-index: 1000; max-width: 320px;
+  }
+  #toast.show { transform: translateY(0); opacity: 1; }
+  #toast.ok { border-color: var(--green); color: var(--green); }
+  #toast.err { border-color: var(--red); color: var(--red); }
+
+  /* ─── Expression Pedal ─── */
+  .exp-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .exp-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+  .exp-header-left { display: flex; align-items: center; gap: 12px; flex: 1; }
+  .exp-slot-tabs {
+    display: flex; gap: 2px;
+    background: var(--panel2);
+    border-radius: 6px; padding: 3px;
+  }
+  .exp-slot-tab {
+    font-family: var(--font-ui); font-size: 12px; font-weight: 600; letter-spacing: 0.5px;
+    padding: 5px 16px;
+    border-radius: 4px;
+    border: none; background: transparent;
+    color: var(--text-dim); cursor: pointer;
+    transition: all 0.15s;
+  }
+  .exp-slot-tab.active { background: var(--panel); color: var(--text-bright); }
+
+  .exp-enable-toggle {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 600; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle-switch {
+    width: 34px; height: 18px;
+    background: var(--border);
+    border-radius: 9px;
+    position: relative;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .toggle-switch::after {
+    content: '';
+    position: absolute; top: 3px; left: 3px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: all 0.2s;
+  }
+  .toggle-switch.on { background: rgba(0,212,255,0.3); }
+  .toggle-switch.on::after { left: 19px; background: var(--accent); }
+
+  .exp-body { padding: 18px; display: flex; flex-direction: column; gap: 16px; }
+  .exp-body.disabled { opacity: 0.4; pointer-events: none; }
+
+  /* Pedal visual */
+  .exp-visual-row {
+    display: flex; align-items: stretch; gap: 20px;
+  }
+  .exp-pedal-visual {
+    width: 80px; flex-shrink: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .pedal-svg-wrap {
+    width: 60px;
+    position: relative;
+  }
+  .pedal-range-labels {
+    width: 100%; display: flex; justify-content: space-between;
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+  }
+  .exp-config-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 20px;
+  }
+
+  /* Curve visualizer */
+  .exp-curve-row {
+    display: flex; align-items: flex-start; gap: 20px;
+  }
+  .curve-wrap {
+    flex: 1;
+  }
+  .curve-canvas-container {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    display: flex; justify-content: center;
+  }
+  canvas#curveCanvas {
+    display: block;
+  }
+  .curve-controls {
+    display: flex; flex-direction: column; gap: 10px;
+    min-width: 160px;
+  }
+
+  /* MIDI message rows for expression */
+  .exp-midi-section {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+  }
+  .exp-midi-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .exp-midi-title {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-dim);
+  }
+
+  /* Range slider */
+  .range-row {
+    display: grid; grid-template-columns: 120px 1fr 42px;
+    align-items: center; gap: 10px;
+  }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 4px;
+    background: var(--border); border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px rgba(0,212,255,0.5);
+    cursor: pointer;
+  }
+  input[type=range]:focus::-webkit-slider-thumb { box-shadow: 0 0 10px rgba(0,212,255,0.8); }
+  .range-value {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--accent); text-align: right; min-width: 36px;
+  }
+
+  /* ─── Responsive ─── */
+  @media (max-width: 1100px) {
+    .workspace { grid-template-columns: 220px 1fr; }
+    .monitor-panel { display: none; }
+  }
+  @media (max-width: 700px) {
+    .workspace { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .sidebar { max-height: 200px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ─── Header ─── -->
+<header>
+  <div class="logo">
+    <div class="logo-device">
+      <div class="logo-btn a"></div>
+      <div class="logo-btn"></div>
+      <div class="logo-btn"></div>
+      <div class="logo-btn"></div>
+    </div>
+    <div class="logo-title">AMPERO<span>.</span>EDIT</div>
+    <div class="logo-version">v1.1</div>
+  </div>
+  <div class="header-controls">
+    <button class="btn-io" onclick="importJSON()" title="Import banks from JSON file">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 2v9M4 7l4 4 4-4"/><path d="M2 13h12"/>
+      </svg>
+      Import
+    </button>
+    <button class="btn-io export" onclick="exportJSON()" title="Export all banks to JSON file">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 11V2M4 5l4-4 4 4"/><path d="M2 13h12"/>
+      </svg>
+      Export
+    </button>
+    <button class="btn-io read-device" id="readDeviceBtn" onclick="readFromDevice()" title="Read all banks from connected device" disabled>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" id="readDeviceIcon">
+        <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5"/><path d="M13.5 2.5v3h-3"/>
+      </svg>
+      Read Device
+    </button>
+    <div class="header-divider"></div>
+    <div id="statusBadge">DISCONNECTED</div>
+    <button id="connectBtn" onclick="toggleConnect()">
+      <span class="ble-dot" id="bleDot"></span>
+      <span id="connectLabel">Connect BLE</span>
+    </button>
+  </div>
+</header>
+
+<!-- Hidden file input for import -->
+<input type="file" id="importFileInput" accept=".json,application/json"
+  style="display:none" onchange="handleImportFile(this)">
+
+<!-- ─── Workspace ─── -->
+<div class="workspace">
+
+  <!-- ─── Sidebar ─── -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Banks</span>
+      <span class="bank-count" id="bankCount">0 / 100</span>
+    </div>
+    <div class="bank-list" id="bankList"></div>
+    <div class="sidebar-footer">
+      <button class="btn-sm" onclick="addBank()">+ New Bank</button>
+      <button class="btn-sm danger" onclick="deleteCurrentBank()">Delete</button>
+    </div>
+  </aside>
+
+  <!-- ─── Main Editor ─── -->
+  <main class="main-editor" id="mainEditor">
+    <div class="no-device" id="noSelection">
+      <div class="no-device-icon">🎛</div>
+      <h3>No bank selected</h3>
+      <p>Connect your Ampero Control via Bluetooth, then select a bank to edit its footswitch configurations.</p>
+      <div class="no-device-hint">⚠ Requires Chrome or Edge with Web Bluetooth</div>
+    </div>
+
+    <div id="editorContent" style="display:none; display:flex; flex-direction:column; gap:24px;">
+
+      <!-- Top bar -->
+      <div class="editor-top">
+        <div class="bank-info">
+          <div class="bank-info-label">Bank Name</div>
+          <input class="bank-name-input" id="bankNameInput" type="text" maxlength="16" placeholder="Bank Name" oninput="markDirty()">
+        </div>
+        <div class="bank-actions">
+          <button class="btn-action btn-send" id="sendBtn" onclick="sendToDevice()" disabled>↑ Send to Device</button>
+          <button class="btn-action btn-save" id="saveBtn" onclick="saveBank()">Save</button>
+        </div>
+      </div>
+
+      <!-- Global Bank Settings -->
+      <div>
+        <div class="section-label">Global Settings</div>
+        <div style="height:12px"></div>
+        <div class="global-panel">
+          <div class="global-field">
+            <label class="global-label">Output To</label>
+            <select id="outputTo" onchange="markDirty()">
+              <option value="0">Bluetooth</option>
+              <option value="1">USB MIDI</option>
+              <option value="2">MIDI OUT</option>
+              <option value="3">All</option>
+            </select>
+          </div>
+          <div class="global-field">
+            <label class="global-label">MIDI Channel</label>
+            <select id="midiChannel" onchange="markDirty()">
+              <!-- filled by JS -->
+            </select>
+          </div>
+          <div class="global-field">
+            <label class="global-label">Bank Number</label>
+            <input type="number" id="bankNumber" min="0" max="99" value="0" oninput="markDirty()">
+          </div>
+        </div>
+      </div>
+
+      <!-- Footswitch Device Visual -->
+      <div>
+        <div class="section-label">Footswitches</div>
+        <div style="height:12px"></div>
+        <div class="device-visual">
+          <div class="device-display" id="deviceDisplay">--</div>
+          <div class="footswitches">
+            <div class="footswitch-btn" id="fsBtn0" style="--sw-color:var(--sw-a);--sw-rgb:0,212,255" onclick="selectFootswitch(0)">
+              <span class="sw-label">SW1</span>
+              <span class="sw-count" id="fsCount0">0 msgs</span>
+            </div>
+            <div class="footswitch-btn" id="fsBtn1" style="--sw-color:var(--sw-b);--sw-rgb:255,107,53" onclick="selectFootswitch(1)">
+              <span class="sw-label">SW2</span>
+              <span class="sw-count" id="fsCount1">0 msgs</span>
+            </div>
+            <div class="footswitch-btn" id="fsBtn2" style="--sw-color:var(--sw-c);--sw-rgb:0,255,157" onclick="selectFootswitch(2)">
+              <span class="sw-label">SW3</span>
+              <span class="sw-count" id="fsCount2">0 msgs</span>
+            </div>
+            <div class="footswitch-btn" id="fsBtn3" style="--sw-color:var(--sw-d);--sw-rgb:168,85,247" onclick="selectFootswitch(3)">
+              <span class="sw-label">SW4</span>
+              <span class="sw-count" id="fsCount3">0 msgs</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ Expression Pedal Section ═══ -->
+      <div>
+        <div class="section-label">Expression Pedals</div>
+        <div style="height:12px"></div>
+        <div class="exp-panel">
+          <!-- Header: slot tabs + enable toggle -->
+          <div class="exp-header">
+            <div class="exp-header-left">
+              <div class="exp-slot-tabs">
+                <button class="exp-slot-tab active" id="expTab0" onclick="selectExpSlot(0)">EXP 1</button>
+                <button class="exp-slot-tab" id="expTab1" onclick="selectExpSlot(1)">EXP 2</button>
+              </div>
+              <span style="font-size:11px;color:var(--text-dim);letter-spacing:1px" id="expSlotName">Expression Pedal 1</span>
+            </div>
+            <label class="exp-enable-toggle" onclick="toggleExpEnabled()">
+              <div class="toggle-switch" id="expEnableToggle"></div>
+              <span id="expEnableLabel">Disabled</span>
+            </label>
+          </div>
+
+          <!-- Body -->
+          <div class="exp-body" id="expBody">
+
+            <!-- Visual + core config -->
+            <div class="exp-visual-row">
+              <!-- Pedal SVG -->
+              <div class="exp-pedal-visual">
+                <svg width="60" height="110" viewBox="0 0 60 110" style="overflow:visible">
+                  <!-- base plate -->
+                  <rect x="5" y="85" width="50" height="18" rx="4" fill="#1a1e2a" stroke="#252a38" stroke-width="1.5"/>
+                  <!-- pedal rocker (rotates) -->
+                  <g id="pedalRocker" style="transform-origin:30px 88px; transform:rotate(-18deg); transition:transform 0.3s">
+                    <rect x="8" y="12" width="44" height="76" rx="6" fill="url(#pedalGrad)" stroke="#252a38" stroke-width="1.5"/>
+                    <rect x="14" y="20" width="32" height="8" rx="2" fill="rgba(0,212,255,0.15)" stroke="rgba(0,212,255,0.3)" stroke-width="1"/>
+                    <text x="30" y="65" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="11" font-weight="700" fill="#5a6070" letter-spacing="1">EXP</text>
+                  </g>
+                  <!-- grip lines -->
+                  <line x1="14" y1="50" x2="46" y2="50" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
+                  <line x1="14" y1="56" x2="46" y2="56" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
+                  <line x1="14" y1="62" x2="46" y2="62" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
+                  <!-- position indicator dot -->
+                  <circle cx="30" cy="94" r="5" fill="var(--accent)" opacity="0.7" id="expPosDot"/>
+                  <defs>
+                    <linearGradient id="pedalGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#2a2e3e"/>
+                      <stop offset="100%" stop-color="#1a1e2a"/>
+                    </linearGradient>
+                  </defs>
+                </svg>
+                <div class="pedal-range-labels">
+                  <span>Toe</span><span>Heel</span>
+                </div>
+              </div>
+
+              <!-- Config grid -->
+              <div class="exp-config-grid">
+                <div class="global-field">
+                  <label class="global-label">Source Type</label>
+                  <select id="expSource" onchange="expFieldChanged()">
+                    <option value="0">Expression Pedal</option>
+                    <option value="1">Toe Switch</option>
+                    <option value="2">CV Input</option>
+                  </select>
+                </div>
+                <div class="global-field">
+                  <label class="global-label">MIDI Channel</label>
+                  <select id="expMidiCh" onchange="expFieldChanged()">
+                    <!-- filled by JS -->
+                  </select>
+                </div>
+                <div class="global-field">
+                  <label class="global-label">Message Type</label>
+                  <select id="expMsgType" onchange="expMsgTypeChanged()">
+                    <option value="CC">CC (Control Change)</option>
+                    <option value="PC">PC (Program Change)</option>
+                    <option value="PB">Pitch Bend</option>
+                    <option value="AT">Aftertouch</option>
+                    <option value="NON">Note On</option>
+                  </select>
+                </div>
+                <div class="global-field" id="expCCNumField">
+                  <label class="global-label">CC Number</label>
+                  <input type="number" id="expCCNum" min="0" max="127" value="7" oninput="expFieldChanged()">
+                </div>
+              </div>
+            </div>
+
+            <!-- Range sliders -->
+            <div style="display:flex;flex-direction:column;gap:10px;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:14px">
+              <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-dim);font-weight:600;margin-bottom:2px">Sweep Range</div>
+              <div class="range-row">
+                <span class="field-label">Heel (Min)</span>
+                <input type="range" id="expMin" min="0" max="127" value="0"
+                  oninput="expRangeChanged('min',this.value)">
+                <span class="range-value" id="expMinVal">0</span>
+              </div>
+              <div class="range-row">
+                <span class="field-label">Toe (Max)</span>
+                <input type="range" id="expMax" min="0" max="127" value="127"
+                  oninput="expRangeChanged('max',this.value)">
+                <span class="range-value" id="expMaxVal">127</span>
+              </div>
+              <div class="range-row">
+                <span class="field-label">Dead Zone</span>
+                <input type="range" id="expDeadzone" min="0" max="20" value="2"
+                  oninput="expRangeChanged('dz',this.value)">
+                <span class="range-value" id="expDeadzoneVal">2</span>
+              </div>
+            </div>
+
+            <!-- Curve + options -->
+            <div class="exp-curve-row">
+              <div class="curve-wrap">
+                <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-dim);font-weight:600;margin-bottom:8px">Response Curve</div>
+                <div class="curve-canvas-container">
+                  <canvas id="curveCanvas" width="180" height="120"></canvas>
+                </div>
+              </div>
+              <div class="curve-controls">
+                <div class="global-field">
+                  <label class="global-label">Curve Type</label>
+                  <select id="expCurve" onchange="expCurveChanged()">
+                    <option value="linear">Linear</option>
+                    <option value="log">Logarithmic</option>
+                    <option value="exp">Exponential</option>
+                    <option value="scurve">S-Curve</option>
+                    <option value="reverse">Reverse</option>
+                  </select>
+                </div>
+                <div class="global-field">
+                  <label class="global-label">Invert</label>
+                  <select id="expInvert" onchange="expFieldChanged()">
+                    <option value="0">Normal</option>
+                    <option value="1">Inverted</option>
+                  </select>
+                </div>
+                <div class="global-field">
+                  <label class="global-label">Smoothing</label>
+                  <select id="expSmoothing" onchange="expFieldChanged()">
+                    <option value="0">None</option>
+                    <option value="1">Low</option>
+                    <option value="2">Medium</option>
+                    <option value="3">High</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Toe-switch MIDI messages -->
+            <div class="exp-midi-section">
+              <div class="exp-midi-header">
+                <span class="exp-midi-title">Toe Switch Messages <span id="expMsgCount" style="color:var(--accent);margin-left:6px">0</span></span>
+                <button class="btn-add-msg" onclick="addExpMessage()">+ Add Message</button>
+              </div>
+              <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
+                Sent when toe switch is pressed (if Source Type = Toe Switch or Expression Pedal).
+              </div>
+              <div class="midi-messages" id="expMidiMsgList" style="max-height:200px"></div>
+            </div>
+
+          </div><!-- /exp-body -->
+        </div><!-- /exp-panel -->
+      </div>
+
+      <!-- Footswitch Editor -->
+      <div id="footswitchEditor" style="display:none">
+        <div class="section-label" id="fsEditorLabel">Footswitch 1 Configuration</div>
+        <div style="height:12px"></div>
+        <div class="sw-editor">
+          <div class="sw-editor-header">
+            <div class="sw-color-bar" id="swColorBar"></div>
+            <div class="sw-editor-title" id="swEditorTitle">SW1 — Group A</div>
+            <div class="sw-tabs">
+              <button class="sw-tab active" id="tabA" onclick="selectGroup('A')">Group A</button>
+              <button class="sw-tab" id="tabB" onclick="selectGroup('B')">Group B</button>
+            </div>
+          </div>
+          <div class="sw-settings">
+            <div class="field-row">
+              <span class="field-label">Mode</span>
+              <div class="field-control select-wrap">
+                <select id="swMode" onchange="markDirty()">
+                  <option value="0">Single</option>
+                  <option value="1">Toggle</option>
+                  <option value="2">Momentary</option>
+                  <option value="3">Hold</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="midi-list-header">
+            <span class="midi-list-title">MIDI Messages <span id="msgCountLabel" style="color:var(--accent);margin-left:6px">0</span></span>
+            <button class="btn-add-msg" onclick="addMidiMessage()">+ Add Message</button>
+          </div>
+          <div class="midi-messages" id="midiMsgList"></div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ─── MIDI Monitor ─── -->
+  <aside class="monitor-panel">
+    <div class="monitor-header">
+      <span class="monitor-title">MIDI Monitor</span>
+      <button class="btn-clear" onclick="clearLog()">Clear</button>
+    </div>
+    <div class="monitor-log" id="monitorLog">
+      <div class="log-entry">
+        <span class="log-time">--:--:--</span>
+        <span class="log-data sys">Waiting for connection…</span>
+      </div>
+    </div>
+    <div class="monitor-stats">
+      <span>RX: <span id="rxCount" style="color:var(--green)">0</span></span>
+      <span>TX: <span id="txCount" style="color:var(--accent)">0</span></span>
+      <span>ERR: <span id="errCount" style="color:var(--red)">0</span></span>
+    </div>
+  </aside>
+
+</div>
+
+
+
+<script>
+// ═══════════════════════════════════════════
+// BLE MIDI Constants (Apple BLE MIDI spec)
+// ═══════════════════════════════════════════
+const BLE_MIDI_SERVICE   = '03b80e5a-ede8-4b33-a751-6ce34ec4c700';
+const BLE_MIDI_CHAR      = '7772e5db-3868-4112-a1a9-f2669d106bf3';
+
+// Hotone Ampero Control SysEx header (manufacturer: 00 21 27, device: 7F)
+const SYSEX_HDR = [0xF0, 0x00, 0x21, 0x27, 0x7F];
+const SYSEX_END = 0xF7;
+
+// ═══════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════
+let bleDevice    = null;
+let bleChar      = null;
+let connected    = false;
+let rxCount = 0, txCount = 0, errCount = 0;
+
+let banks = [];          // array of bank objects
+let currentBankIdx = -1;
+let currentSwIdx   = 0;
+let currentGroup   = 'A';
+let isDirty = false;
+
+const SW_COLORS = ['var(--sw-a)', 'var(--sw-b)', 'var(--sw-c)', 'var(--sw-d)'];
+const SW_NAMES  = ['SW1', 'SW2', 'SW3', 'SW4'];
+
+// ═══════════════════════════════════════════
+// Bank / Footswitch Data Model
+// ═══════════════════════════════════════════
+function newMidiMsg() {
+  return { type: 'PC', ch: 1, data1: 0, data2: 0 };
+}
+function newExpPedal(slot) {
+  return {
+    slot,
+    enabled: false,
+    source: 0,
+    midiChannel: 1,
+    msgType: 'CC',
+    ccNum: slot === 0 ? 7 : 11, // CC7=Volume, CC11=Expression by default
+    minVal: 0,
+    maxVal: 127,
+    deadzone: 2,
+    curve: 'linear',
+    invert: 0,
+    smoothing: 1,
+    toeMessages: []
+  };
+}
+function newFootswitch() {
+  return {
+    mode: 0,
+    groupA: [],
+    groupB: []
+  };
+}
+function newBank(num) {
+  return {
+    name: `Bank ${String(num).padStart(2,'0')}`,
+    number: num,
+    outputTo: 0,
+    midiChannel: 1,
+    switches: [newFootswitch(), newFootswitch(), newFootswitch(), newFootswitch()],
+    expPedals: [newExpPedal(0), newExpPedal(1)],
+    dirty: false
+  };
+}
+
+let currentExpSlot = 0;
+
+// ═══════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════
+function init() {
+  // Fill MIDI channel options for all channel selects
+  ['midiChannel','expMidiCh'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    for (let i = 1; i <= 16; i++) {
+      const o = document.createElement('option');
+      o.value = i; o.textContent = `Ch ${i}`;
+      sel.appendChild(o);
+    }
+  });
+  // Create default banks
+  for (let i = 0; i < 10; i++) banks.push(newBank(i));
+  renderBankList();
+  selectBank(0);
+  drawCurve();
+
+  // Modal backdrop click
+  document.getElementById('importModal').addEventListener('click', function(e) {
+    if (e.target === this) closeImportModal();
+  });
+}
+
+// ═══════════════════════════════════════════
+// BLE Connection
+// ═══════════════════════════════════════════
+async function toggleConnect() {
+  if (connected) {
+    disconnect();
+  } else {
+    await connectBLE();
+  }
+}
+
+async function connectBLE() {
+  if (!navigator.bluetooth) {
+    toast('Web Bluetooth not supported. Use Chrome or Edge.', 'err');
+    return;
+  }
+  setConnecting();
+  try {
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'Ampero Control' }, { namePrefix: 'Ampero' }],
+      optionalServices: [BLE_MIDI_SERVICE]
+    });
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+    log('sys', `Connecting to ${bleDevice.name}…`);
+    const server = await bleDevice.gatt.connect();
+    const service = await server.getPrimaryService(BLE_MIDI_SERVICE);
+    bleChar = await service.getCharacteristic(BLE_MIDI_CHAR);
+
+    await bleChar.startNotifications();
+    bleChar.addEventListener('characteristicvaluechanged', onMidiData);
+
+    setConnected(bleDevice.name);
+    log('sys', `Connected to ${bleDevice.name}`);
+    toast(`Connected to ${bleDevice.name}`, 'ok');
+
+    // Auto-read all banks from device
+    await startDeviceDump();
+
+  } catch (e) {
+    setDisconnected();
+    if (e.name !== 'NotFoundError') {
+      log('err', `Connection failed: ${e.message}`);
+      toast(`Connection failed: ${e.message}`, 'err');
+    }
+  }
+}
+
+function disconnect() {
+  if (bleDevice && bleDevice.gatt.connected) {
+    bleDevice.gatt.disconnect();
+  }
+  setDisconnected();
+}
+
+function onDisconnected() {
+  setDisconnected();
+  log('sys', 'Device disconnected');
+  toast('Device disconnected', 'err');
+}
+
+function setConnecting() {
+  document.getElementById('connectBtn').className = 'connecting';
+  document.getElementById('connectLabel').textContent = 'Connecting…';
+  document.getElementById('bleDot').className = 'ble-dot blink';
+  document.getElementById('statusBadge').textContent = 'CONNECTING';
+  document.getElementById('statusBadge').className = '';
+}
+
+function setConnected(name) {
+  connected = true;
+  document.getElementById('connectBtn').className = 'connected';
+  document.getElementById('connectLabel').textContent = 'Disconnect';
+  document.getElementById('bleDot').className = 'ble-dot';
+  document.getElementById('statusBadge').textContent = name || 'CONNECTED';
+  document.getElementById('statusBadge').className = 'ok';
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('readDeviceBtn').disabled = false;
+}
+
+function setDisconnected() {
+  connected = false;
+  bleChar = null;
+  document.getElementById('connectBtn').className = '';
+  document.getElementById('connectLabel').textContent = 'Connect BLE';
+  document.getElementById('bleDot').className = 'ble-dot';
+  document.getElementById('statusBadge').textContent = 'DISCONNECTED';
+  document.getElementById('statusBadge').className = '';
+  document.getElementById('sendBtn').disabled = true;
+  document.getElementById('readDeviceBtn').disabled = true;
+  // Stop any dump in progress
+  if (_dumpInProgress) cancelDump();
+}
+
+// ═══════════════════════════════════════════
+// SysEx Reassembly Buffer
+// BLE MIDI splits long SysEx across packets.
+// We accumulate until we see F7.
+// ═══════════════════════════════════════════
+let _sysexBuf = [];        // accumulates bytes across BLE packets
+let _sysexActive = false;  // are we mid-SysEx?
+
+function onMidiData(event) {
+  const data = new Uint8Array(event.target.value.buffer);
+  rxCount++;
+  document.getElementById('rxCount').textContent = rxCount;
+
+  if (data.length < 2) return;
+
+  // BLE MIDI packet layout:
+  //   byte 0: header    (MSB set, 6-bit timestamp high)
+  //   byte 1: timestamp (MSB set, 7-bit timestamp low)  — may repeat inside for Running Status
+  // We walk the payload from byte 1 onwards, stripping timestamp bytes (MSB set, not a status).
+  let i = 1; // skip BLE header byte
+
+  while (i < data.length) {
+    const b = data[i];
+
+    // Timestamp byte embedded in stream (MSB set, appears before each status in multi-msg packets)
+    if ((b & 0x80) && !_sysexActive && i > 1) { i++; continue; }
+
+    if (_sysexActive) {
+      if (b === 0xF7) {
+        _sysexBuf.push(0xF7);
+        _sysexActive = false;
+        const complete = _sysexBuf.slice();
+        _sysexBuf = [];
+        handleSysEx(complete);
+        log('rx', 'SysEx(' + complete.length + '): ' + hexStr(complete.slice(0, Math.min(complete.length, 16))) + (complete.length > 16 ? '…' : ''));
+      } else if (!(b & 0x80)) {
+        // Data byte inside SysEx (MSB must be 0)
+        _sysexBuf.push(b);
+      }
+      // Ignore any 0x80+ bytes mid-SysEx except F7 (those are BLE timestamps)
+      i++;
+      continue;
+    }
+
+    if (b === 0xF0) {
+      _sysexActive = true;
+      _sysexBuf = [0xF0];
+      i++; continue;
+    }
+
+    // Regular MIDI messages
+    const msgType = b & 0xF0;
+    const ch = (b & 0x0F) + 1;
+    if (msgType === 0xC0 && i+1 < data.length) {
+      log('rx', `PC ch:${ch} prog:${data[i+1]}`); i += 2;
+    } else if (msgType === 0xB0 && i+2 < data.length) {
+      log('rx', `CC ch:${ch} #${data[i+1]} val:${data[i+2]}`); i += 3;
+    } else if (msgType === 0x90 && i+2 < data.length) {
+      log('rx', `NoteOn ch:${ch} n:${data[i+1]} v:${data[i+2]}`); i += 3;
+    } else if (msgType === 0x80 && i+2 < data.length) {
+      log('rx', `NoteOff ch:${ch} n:${data[i+1]}`); i += 3;
+    } else { i++; }
+  }
+}
+
+// ═══════════════════════════════════════════
+// SysEx Dispatcher
+// ═══════════════════════════════════════════
+function handleSysEx(bytes) {
+  if (bytes.length < 6) return;
+  // Validate Hotone header: F0 00 21 27 7F <cmd>
+  if (!(bytes[0] === 0xF0 && bytes[1] === 0x00 &&
+        bytes[2] === 0x21 && bytes[3] === 0x27)) return;
+
+  const cmd = bytes[5];
+  log('sys', `Hotone SysEx cmd:0x${cmd.toString(16).toUpperCase()} len:${bytes.length}`);
+
+  if (cmd === 0x02) {
+    // Bank data dump response (mirrors our buildBankSysEx format)
+    parseBankSysEx(bytes);
+  } else if (cmd === 0x03) {
+    // All-banks dump complete acknowledgement
+    onDumpComplete();
+  } else if (cmd === 0x7F) {
+    // Device identity / capability response
+    log('sys', `Device identity: ${hexStr(bytes.slice(6, bytes.length-1))}`);
+  }
+}
+
+// ═══════════════════════════════════════════
+// Device Dump Engine
+// ═══════════════════════════════════════════
+const TOTAL_BANKS      = 100;  // Ampero Control supports up to 100 banks
+const DUMP_TIMEOUT_MS  = 400;  // ms to wait for each bank response
+const DUMP_BATCH_SIZE  = 1;    // request 1 at a time to avoid flooding BLE
+
+let _dumpInProgress  = false;
+let _dumpBanksParsed = 0;
+let _dumpBanksExpected = 0;
+let _dumpResults     = {};   // bankNum → parsed bank object
+let _dumpTimer       = null;
+let _dumpCurrentReq  = -1;
+let _dumpResolve     = null;
+
+async function startDeviceDump() {
+  if (_dumpInProgress) return;
+
+  // First send an identity request to check device is responsive
+  // F0 00 21 27 7F 00 F7  (cmd 00 = identity)
+  await sendBLEMIDI([...SYSEX_HDR, 0x00, SYSEX_END]);
+  await sleep(80);
+
+  // Request all 100 banks sequentially
+  _dumpInProgress   = true;
+  _dumpBanksParsed  = 0;
+  _dumpBanksExpected = TOTAL_BANKS;
+  _dumpResults      = {};
+
+  showDumpProgress(0, TOTAL_BANKS);
+  log('sys', `Starting full device dump (${TOTAL_BANKS} banks)…`);
+
+  for (let bn = 0; bn < TOTAL_BANKS; bn++) {
+    if (!connected) break;
+    _dumpCurrentReq = bn;
+    await requestBankDump(bn);
+    await waitForBankResponse(bn);
+    updateDumpProgress(bn + 1, TOTAL_BANKS);
+  }
+
+  finaliseDump();
+}
+
+// Wait for bank `num` to arrive, with timeout fallback
+function waitForBankResponse(num) {
+  return new Promise(resolve => {
+    _dumpResolve = resolve;
+    _dumpTimer = setTimeout(() => {
+      // Timed out — create a blank bank so we don't stall
+      if (!_dumpResults[num]) {
+        _dumpResults[num] = newBank(num);
+        log('sys', `Bank ${num}: no response, using default`);
+      }
+      _dumpResolve = null;
+      resolve();
+    }, DUMP_TIMEOUT_MS);
+  });
+}
+
+function parseBankSysEx(bytes) {
+  // Layout (mirrors buildBankSysEx):
+  // [0]  F0
+  // [1..4] 00 21 27 7F   (Hotone header)
+  // [5]  cmd  (0x02)
+  // [6]  bank number
+  // [7]  outputTo
+  // [8]  midiChannel (0-based)
+  // [9..N] switches × 4:
+  //          mode (1)
+  //          groupA_len (1)
+  //          groupA msgs × 4 bytes each
+  //          groupB_len (1)
+  //          groupB msgs × 4 bytes each
+  // [N+1..] expPedals × 2:
+  //          enabled, source, midiCh, msgType, ccNum,
+  //          minVal, maxVal, deadzone, curve, invert, smoothing,
+  //          toeMsg_len, toeMsg × 4 bytes each
+  // [last] F7
+
+  try {
+    let p = 6; // parse cursor
+    const safe = (n = 1) => { if (p + n > bytes.length - 1) throw new Error('underflow'); };
+
+    safe();
+    const bankNum  = bytes[p++];
+    safe(); const outputTo    = bytes[p++];
+    safe(); const midiChannel = bytes[p++] + 1;
+
+    const switches = [];
+    for (let s = 0; s < 4; s++) {
+      safe(); const mode    = bytes[p++];
+      safe(); const lenA    = bytes[p++];
+      const groupA = [];
+      for (let m = 0; m < lenA; m++) { safe(4); groupA.push(decodeMidiMsg(bytes, p)); p += 4; }
+      safe(); const lenB    = bytes[p++];
+      const groupB = [];
+      for (let m = 0; m < lenB; m++) { safe(4); groupB.push(decodeMidiMsg(bytes, p)); p += 4; }
+      switches.push({ mode, groupA, groupB });
+    }
+
+    const expPedals = [];
+    for (let e = 0; e < 2; e++) {
+      safe(12);
+      const ep = {
+        slot:        e,
+        enabled:     bytes[p++] === 1,
+        source:      bytes[p++],
+        midiChannel: bytes[p++] + 1,
+        msgType:     (['CC','PC','PB','AT','NON'])[bytes[p++]] ?? 'CC',
+        ccNum:       bytes[p++],
+        minVal:      bytes[p++],
+        maxVal:      bytes[p++],
+        deadzone:    bytes[p++],
+        curve:       (['linear','log','exp','scurve','reverse'])[bytes[p++]] ?? 'linear',
+        invert:      bytes[p++],
+        smoothing:   bytes[p++],
+        toeMessages: []
+      };
+      safe(); const toeLen = bytes[p++];
+      for (let m = 0; m < toeLen; m++) { safe(4); ep.toeMessages.push(decodeMidiMsg(bytes, p)); p += 4; }
+      expPedals.push(ep);
+    }
+
+    // Pad expPedals to 2 if device sent fewer
+    while (expPedals.length < 2) expPedals.push(newExpPedal(expPedals.length));
+
+    const bank = {
+      name:        `Bank ${String(bankNum).padStart(2,'0')}`,
+      number:      bankNum,
+      outputTo,
+      midiChannel,
+      switches,
+      expPedals,
+      dirty:       false
+    };
+
+    _dumpResults[bankNum] = bank;
+    _dumpBanksParsed++;
+    log('sys', `Bank ${bankNum} parsed OK (${p - 6} bytes)`);
+
+  } catch (err) {
+    log('err', `Bank parse error: ${err.message}`);
+  }
+
+  // Resolve the pending waitForBankResponse promise
+  if (_dumpCurrentReq >= 0 && _dumpResolve) {
+    clearTimeout(_dumpTimer);
+    const resolve = _dumpResolve;
+    _dumpResolve = null;
+    resolve();
+  }
+}
+
+function decodeMidiMsg(bytes, offset) {
+  const typeMap = ['PC','CC','NON','NOF'];
+  return {
+    type:  typeMap[bytes[offset]]   ?? 'PC',
+    ch:    (bytes[offset+1] & 0x7F) + 1,
+    data1: bytes[offset+2] & 0x7F,
+    data2: bytes[offset+3] & 0x7F
+  };
+}
+
+function finaliseDump() {
+  _dumpInProgress = false;
+  hideDumpProgress();
+
+  if (Object.keys(_dumpResults).length === 0) {
+    log('sys', 'No banks received from device — keeping local banks');
+    toast('Device did not respond to dump request', 'err');
+    return;
+  }
+
+  // Rebuild banks array from parsed results, fill gaps with blank banks
+  const newBanks = [];
+  for (let i = 0; i < TOTAL_BANKS; i++) {
+    newBanks.push(_dumpResults[i] ?? newBank(i));
+  }
+  banks = newBanks;
+  currentBankIdx = -1;
+  renderBankList();
+  selectBank(0);
+
+  const parsed = Object.keys(_dumpResults).length;
+  log('sys', `Dump complete: ${parsed}/${TOTAL_BANKS} banks loaded from device`);
+  toast(`✓ ${parsed} banks loaded from device`, 'ok');
+}
+
+function onDumpComplete() {
+  // Device sent explicit "dump done" — finalise early
+  if (_dumpInProgress) finaliseDump();
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════════
+// Dump Progress UI
+// ═══════════════════════════════════════════
+function showDumpProgress(done, total) {
+  // Spin the header button icon
+  const icon = document.getElementById('readDeviceIcon');
+  if (icon) icon.classList.add('spinning');
+  let el = document.getElementById('dumpProgress');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'dumpProgress';
+    el.style.cssText = `
+      position:fixed; inset:0;
+      background:rgba(0,0,0,0.75);
+      backdrop-filter:blur(6px);
+      z-index:600;
+      display:flex; align-items:center; justify-content:center;
+    `;
+    el.innerHTML = `
+      <div style="
+        background:var(--panel); border:1px solid var(--border);
+        border-radius:12px; padding:32px 40px;
+        display:flex; flex-direction:column; align-items:center; gap:20px;
+        min-width:320px;
+      ">
+        <div style="display:flex;align-items:center;gap:12px">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round">
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+          </svg>
+          <span style="font-family:var(--font-ui);font-size:17px;font-weight:700;letter-spacing:1px;color:var(--text-bright)">Reading Device…</span>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)" id="dumpStatusText">Requesting bank 0 of ${total}</div>
+        <div style="width:260px;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+          <div id="dumpBar" style="height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width 0.15s"></div>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim)" id="dumpPct">0%</div>
+        <div style="font-size:12px;color:var(--text-dim);text-align:center;line-height:1.6;max-width:260px">
+          If the device does not respond, banks<br>will be populated with default values.
+        </div>
+        <button onclick="cancelDump()" style="
+          font-family:var(--font-ui);font-size:12px;font-weight:600;
+          padding:7px 18px; border-radius:var(--radius);
+          border:1px solid var(--border); background:transparent;
+          color:var(--text-dim); cursor:pointer;
+        ">Skip & use local banks</button>
+      </div>
+    `;
+    document.body.appendChild(el);
+  }
+  updateDumpProgress(done, total);
+}
+
+function updateDumpProgress(done, total) {
+  const pct = Math.round((done / total) * 100);
+  const bar  = document.getElementById('dumpBar');
+  const txt  = document.getElementById('dumpStatusText');
+  const pctEl= document.getElementById('dumpPct');
+  if (bar)   bar.style.width   = pct + '%';
+  if (txt)   txt.textContent   = done < total ? `Requesting bank ${done} of ${total}` : 'Finalising…';
+  if (pctEl) pctEl.textContent = pct + '%';
+}
+
+function hideDumpProgress() {
+  const icon = document.getElementById('readDeviceIcon');
+  if (icon) icon.classList.remove('spinning');
+  const el = document.getElementById('dumpProgress');
+  if (el) { el.style.opacity = '0'; el.style.transition = 'opacity 0.4s'; setTimeout(() => el.remove(), 400); }
+}
+
+function cancelDump() {
+  _dumpInProgress = false;
+  clearTimeout(_dumpTimer);
+  if (_dumpResolve) { _dumpResolve(); _dumpResolve = null; }
+  hideDumpProgress();
+  log('sys', 'Device dump cancelled by user');
+  toast('Dump skipped — using local banks', '');
+}
+
+// Also expose a manual "re-read from device" button action
+async function readFromDevice() {
+  if (!connected) { toast('Not connected', 'err'); return; }
+  if (_dumpInProgress) { toast('Dump already in progress', ''); return; }
+  await startDeviceDump();
+}
+
+// ═══════════════════════════════════════════
+// BLE MIDI Send
+// ═══════════════════════════════════════════
+async function sendBLEMIDI(midiBytes) {
+  if (!bleChar) return false;
+  // BLE MIDI packet: [0x80 (header), 0x80 (timestamp), ...midi...]
+  const now = Date.now() & 0x1FFF;
+  const ts1 = 0x80 | ((now >> 7) & 0x3F);
+  const ts2 = 0x80 | (now & 0x7F);
+  const packet = new Uint8Array([ts1, ts2, ...midiBytes]);
+  try {
+    await bleChar.writeValueWithoutResponse(packet);
+    txCount++;
+    document.getElementById('txCount').textContent = txCount;
+    return true;
+  } catch (e) {
+    errCount++;
+    document.getElementById('errCount').textContent = errCount;
+    log('err', `TX error: ${e.message}`);
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════
+// Hotone SysEx Protocol
+// (Based on observed patterns & manual)
+// ═══════════════════════════════════════════
+
+// Request full bank dump from device
+async function requestBankDump(bankNum) {
+  // F0 00 21 27 7F 01 bankNum F7
+  const msg = [...SYSEX_HDR, 0x01, bankNum & 0x7F, SYSEX_END];
+  log('tx', 'Request bank ' + bankNum + ': ' + hexStr(msg));
+  await sendBLEMIDI(msg);
+}
+
+// Build a bank SysEx write packet
+function buildBankSysEx(bank) {
+  const bytes = [...SYSEX_HDR, 0x02]; // cmd 02 = write bank
+  bytes.push(bank.number & 0x7F);
+  bytes.push(bank.outputTo & 0x7F);
+  bytes.push((bank.midiChannel - 1) & 0x7F);
+
+  for (let s = 0; s < 4; s++) {
+    const sw = bank.switches[s];
+    bytes.push(sw.mode & 0x7F);
+    // Encode group A messages
+    bytes.push(sw.groupA.length & 0x7F);
+    for (const m of sw.groupA) {
+      bytes.push(...encodeMidiMsg(m));
+    }
+    // Encode group B messages
+    bytes.push(sw.groupB.length & 0x7F);
+    for (const m of sw.groupB) {
+      bytes.push(...encodeMidiMsg(m));
+    }
+  }
+  // Encode expression pedals
+  for (const exp of bank.expPedals) {
+    bytes.push(...encodeExpPedal(exp));
+  }
+  bytes.push(SYSEX_END);
+  return bytes;
+}
+
+function encodeMidiMsg(msg) {
+  const typeMap = { 'PC': 0, 'CC': 1, 'NON': 2, 'NOF': 3 };
+  return [
+    (typeMap[msg.type] ?? 0) & 0x7F,
+    (msg.ch - 1) & 0x7F,
+    msg.data1 & 0x7F,
+    msg.data2 & 0x7F
+  ];
+}
+
+function hexStr(bytes) {
+  return bytes.map(b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+}
+
+// ═══════════════════════════════════════════
+// Send current bank to device
+// ═══════════════════════════════════════════
+async function sendToDevice() {
+  if (!connected || currentBankIdx < 0) return;
+  saveBank();
+  const bank = banks[currentBankIdx];
+  const msg = buildBankSysEx(bank);
+  log('tx', 'Write bank ' + bank.number + ': ' + hexStr(msg));
+  const ok = await sendBLEMIDI(msg);
+  if (ok) {
+    toast(`Bank ${bank.number} sent to device`, 'ok');
+    bank.dirty = false;
+    renderBankList();
+  }
+}
+
+// ═══════════════════════════════════════════
+// Bank List UI
+// ═══════════════════════════════════════════
+function renderBankList() {
+  const list = document.getElementById('bankList');
+  list.innerHTML = '';
+  banks.forEach((bank, i) => {
+    const el = document.createElement('div');
+    el.className = 'bank-item' + (i === currentBankIdx ? ' active' : '');
+    el.onclick = () => selectBank(i);
+    el.innerHTML = `
+      <span class="bank-num">${String(bank.number).padStart(2,'0')}</span>
+      <span class="bank-name">${escHtml(bank.name)}</span>
+      <span class="bank-dirty ${bank.dirty ? 'show' : ''}"></span>
+    `;
+    list.appendChild(el);
+  });
+  document.getElementById('bankCount').textContent = `${banks.length} / 100`;
+}
+
+function selectBank(idx) {
+  currentBankIdx = idx;
+  const bank = banks[idx];
+
+  document.getElementById('noSelection').style.display = 'none';
+  document.getElementById('editorContent').style.display = 'flex';
+
+  document.getElementById('bankNameInput').value = bank.name;
+  document.getElementById('bankNumber').value = bank.number;
+  document.getElementById('outputTo').value = bank.outputTo;
+  document.getElementById('midiChannel').value = bank.midiChannel;
+  document.getElementById('deviceDisplay').textContent = String(bank.number).padStart(2,'0');
+
+  updateFsCounts();
+  selectFootswitch(0);
+  selectExpSlot(0);
+  renderBankList();
+  isDirty = false;
+}
+
+function updateFsCounts() {
+  if (currentBankIdx < 0) return;
+  const bank = banks[currentBankIdx];
+  for (let s = 0; s < 4; s++) {
+    const sw = bank.switches[s];
+    const total = sw.groupA.length + sw.groupB.length;
+    document.getElementById(`fsCount${s}`).textContent = `${total} msg${total !== 1 ? 's' : ''}`;
+  }
+}
+
+// ═══════════════════════════════════════════
+// Footswitch Selection
+// ═══════════════════════════════════════════
+function selectFootswitch(idx) {
+  currentSwIdx = idx;
+  document.querySelectorAll('.footswitch-btn').forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+  });
+  document.getElementById('footswitchEditor').style.display = 'block';
+  document.getElementById('fsEditorLabel').textContent = `Footswitch ${idx + 1} Configuration`;
+
+  const colors = ['var(--sw-a)', 'var(--sw-b)', 'var(--sw-c)', 'var(--sw-d)'];
+  document.getElementById('swColorBar').style.background = colors[idx];
+  document.querySelector('.sw-editor').style.setProperty('--sw-active-color', colors[idx]);
+
+  selectGroup(currentGroup);
+}
+
+function selectGroup(grp) {
+  currentGroup = grp;
+  document.getElementById('tabA').className = 'sw-tab' + (grp === 'A' ? ' active' : '');
+  document.getElementById('tabB').className = 'sw-tab' + (grp === 'B' ? ' active' : '');
+
+  const sw = banks[currentBankIdx].switches[currentSwIdx];
+  document.getElementById('swMode').value = sw.mode;
+  document.getElementById('swEditorTitle').textContent = `${SW_NAMES[currentSwIdx]} — Group ${grp}`;
+
+  renderMidiMessages();
+}
+
+// ═══════════════════════════════════════════
+// MIDI Message List
+// ═══════════════════════════════════════════
+function renderMidiMessages() {
+  if (currentBankIdx < 0) return;
+  const sw = banks[currentBankIdx].switches[currentSwIdx];
+  const msgs = currentGroup === 'A' ? sw.groupA : sw.groupB;
+  const list = document.getElementById('midiMsgList');
+  list.innerHTML = '';
+
+  msgs.forEach((msg, i) => {
+    const row = document.createElement('div');
+    row.className = 'midi-msg';
+
+    const typeClass = { 'PC':'type-PC','CC':'type-CC','NON':'type-NON','NOF':'type-NOF' }[msg.type] || 'type-PC';
+    const typeLabels = { 'PC':'Prog Chg','CC':'Control','NON':'Note On','NOF':'Note Off' };
+    const d1Label = { 'PC':'Prog','CC':'CC#','NON':'Note','NOF':'Note' }[msg.type] || 'Data 1';
+    const d2Label = { 'PC':'—','CC':'Value','NON':'Vel','NOF':'Vel' }[msg.type] || 'Data 2';
+
+    row.innerHTML = `
+      <select onchange="updateMsgType(${i}, this.value)">
+        <option value="PC" ${msg.type==='PC'?'selected':''}>PC</option>
+        <option value="CC" ${msg.type==='CC'?'selected':''}>CC</option>
+        <option value="NON" ${msg.type==='NON'?'selected':''}>Note On</option>
+        <option value="NOF" ${msg.type==='NOF'?'selected':''}>Note Off</option>
+      </select>
+      <input type="number" min="1" max="16" value="${msg.ch}" title="Channel"
+        oninput="updateMsg(${i},'ch',+this.value)" placeholder="Ch">
+      <input type="number" min="0" max="127" value="${msg.data1}" title="${d1Label}"
+        oninput="updateMsg(${i},'data1',+this.value)" placeholder="D1">
+      <input type="number" min="0" max="127" value="${msg.data2}" title="${d2Label}" ${msg.type==='PC'?'disabled':''}
+        oninput="updateMsg(${i},'data2',+this.value)" placeholder="D2">
+      <span class="msg-type-badge ${typeClass}">${typeLabels[msg.type]}</span>
+      <button class="btn-del" title="Remove" onclick="removeMsg(${i})">✕</button>
+    `;
+    list.appendChild(row);
+  });
+
+  document.getElementById('msgCountLabel').textContent = msgs.length;
+}
+
+function updateMsgType(idx, type) {
+  getCurrentMsgs()[idx].type = type;
+  markDirty();
+  renderMidiMessages();
+}
+function updateMsg(idx, field, val) {
+  getCurrentMsgs()[idx][field] = val;
+  markDirty();
+}
+function removeMsg(idx) {
+  getCurrentMsgs().splice(idx, 1);
+  markDirty();
+  renderMidiMessages();
+  updateFsCounts();
+}
+function addMidiMessage() {
+  const msgs = getCurrentMsgs();
+  if (msgs.length >= 16) { toast('Max 16 messages per group', 'err'); return; }
+  msgs.push(newMidiMsg());
+  markDirty();
+  renderMidiMessages();
+  updateFsCounts();
+}
+function getCurrentMsgs() {
+  const sw = banks[currentBankIdx].switches[currentSwIdx];
+  return currentGroup === 'A' ? sw.groupA : sw.groupB;
+}
+
+// ═══════════════════════════════════════════
+// Bank Management
+// ═══════════════════════════════════════════
+function saveBank() {
+  if (currentBankIdx < 0) return;
+  const bank = banks[currentBankIdx];
+  bank.name      = document.getElementById('bankNameInput').value || `Bank ${bank.number}`;
+  bank.number    = parseInt(document.getElementById('bankNumber').value) || 0;
+  bank.outputTo  = parseInt(document.getElementById('outputTo').value);
+  bank.midiChannel = parseInt(document.getElementById('midiChannel').value);
+  const sw = bank.switches[currentSwIdx];
+  sw.mode = parseInt(document.getElementById('swMode').value);
+  // Save current exp pedal UI state
+  const exp = bank.expPedals[currentExpSlot];
+  exp.source      = parseInt(document.getElementById('expSource').value);
+  exp.midiChannel = parseInt(document.getElementById('expMidiCh').value);
+  exp.msgType     = document.getElementById('expMsgType').value;
+  exp.ccNum       = parseInt(document.getElementById('expCCNum').value);
+  exp.minVal      = parseInt(document.getElementById('expMin').value);
+  exp.maxVal      = parseInt(document.getElementById('expMax').value);
+  exp.deadzone    = parseInt(document.getElementById('expDeadzone').value);
+  exp.curve       = document.getElementById('expCurve').value;
+  exp.invert      = parseInt(document.getElementById('expInvert').value);
+  exp.smoothing   = parseInt(document.getElementById('expSmoothing').value);
+  bank.dirty = true;
+  isDirty = false;
+  renderBankList();
+  toast('Bank saved locally', 'ok');
+}
+
+function addBank() {
+  if (banks.length >= 100) { toast('Max 100 banks', 'err'); return; }
+  const num = banks.length;
+  banks.push(newBank(num));
+  renderBankList();
+  selectBank(banks.length - 1);
+}
+
+function deleteCurrentBank() {
+  if (currentBankIdx < 0 || banks.length <= 1) return;
+  banks.splice(currentBankIdx, 1);
+  const newIdx = Math.min(currentBankIdx, banks.length - 1);
+  currentBankIdx = -1;
+  renderBankList();
+  selectBank(newIdx);
+}
+
+function markDirty() {
+  isDirty = true;
+  if (currentBankIdx >= 0) {
+    banks[currentBankIdx].dirty = true;
+    renderBankList();
+  }
+}
+
+// ═══════════════════════════════════════════
+// MIDI Monitor Log
+// ═══════════════════════════════════════════
+const MAX_LOG = 200;
+function log(type, msg) {
+  const el = document.getElementById('monitorLog');
+  const now = new Date();
+  const ts = [now.getHours(), now.getMinutes(), now.getSeconds()]
+    .map(n => String(n).padStart(2,'0')).join(':');
+
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerHTML = `<span class="log-time">${ts}</span><span class="log-data ${type}">${escHtml(msg)}</span>`;
+  el.appendChild(entry);
+
+  // Limit entries
+  while (el.children.length > MAX_LOG) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+
+  if (type === 'err') {
+    errCount++;
+    document.getElementById('errCount').textContent = errCount;
+  }
+}
+
+function clearLog() {
+  document.getElementById('monitorLog').innerHTML = '';
+  rxCount = txCount = errCount = 0;
+  ['rxCount','txCount','errCount'].forEach(id => document.getElementById(id).textContent = '0');
+}
+
+// ═══════════════════════════════════════════
+// Expression Pedal UI
+// ═══════════════════════════════════════════
+function selectExpSlot(slot) {
+  currentExpSlot = slot;
+  document.getElementById('expTab0').className = 'exp-slot-tab' + (slot===0?' active':'');
+  document.getElementById('expTab1').className = 'exp-slot-tab' + (slot===1?' active':'');
+  document.getElementById('expSlotName').textContent = `Expression Pedal ${slot+1}`;
+  renderExpUI();
+}
+
+function renderExpUI() {
+  if (currentBankIdx < 0) return;
+  const exp = banks[currentBankIdx].expPedals[currentExpSlot];
+
+  const tog = document.getElementById('expEnableToggle');
+  tog.className = 'toggle-switch' + (exp.enabled ? ' on' : '');
+  document.getElementById('expEnableLabel').textContent = exp.enabled ? 'Enabled' : 'Disabled';
+  document.getElementById('expBody').className = 'exp-body' + (exp.enabled ? '' : ' disabled');
+
+  document.getElementById('expSource').value    = exp.source;
+  document.getElementById('expMidiCh').value    = exp.midiChannel;
+  document.getElementById('expMsgType').value   = exp.msgType;
+  document.getElementById('expCCNum').value     = exp.ccNum;
+  document.getElementById('expMin').value       = exp.minVal;
+  document.getElementById('expMax').value       = exp.maxVal;
+  document.getElementById('expDeadzone').value  = exp.deadzone;
+  document.getElementById('expCurve').value     = exp.curve;
+  document.getElementById('expInvert').value    = exp.invert;
+  document.getElementById('expSmoothing').value = exp.smoothing;
+
+  document.getElementById('expMinVal').textContent      = exp.minVal;
+  document.getElementById('expMaxVal').textContent      = exp.maxVal;
+  document.getElementById('expDeadzoneVal').textContent = exp.deadzone;
+  document.getElementById('expCCNumField').style.display = exp.msgType === 'CC' ? '' : 'none';
+
+  renderExpMessages();
+  drawCurve();
+  animatePedal(exp);
+}
+
+function toggleExpEnabled() {
+  if (currentBankIdx < 0) return;
+  const exp = banks[currentBankIdx].expPedals[currentExpSlot];
+  exp.enabled = !exp.enabled;
+  markDirty();
+  renderExpUI();
+}
+
+function expFieldChanged() {
+  if (currentBankIdx < 0) return;
+  const exp = banks[currentBankIdx].expPedals[currentExpSlot];
+  exp.source      = parseInt(document.getElementById('expSource').value);
+  exp.midiChannel = parseInt(document.getElementById('expMidiCh').value);
+  exp.msgType     = document.getElementById('expMsgType').value;
+  exp.ccNum       = parseInt(document.getElementById('expCCNum').value);
+  exp.invert      = parseInt(document.getElementById('expInvert').value);
+  exp.smoothing   = parseInt(document.getElementById('expSmoothing').value);
+  markDirty();
+  document.getElementById('expCCNumField').style.display = exp.msgType === 'CC' ? '' : 'none';
+}
+
+function expMsgTypeChanged() {
+  expFieldChanged();
+  const t = document.getElementById('expMsgType').value;
+  const isPS = t === 'PB';
+  document.getElementById('expMin').max = isPS ? 16383 : 127;
+  document.getElementById('expMax').max = isPS ? 16383 : 127;
+}
+
+function expRangeChanged(field, val) {
+  if (currentBankIdx < 0) return;
+  const exp = banks[currentBankIdx].expPedals[currentExpSlot];
+  val = parseInt(val);
+  if (field === 'min')      { exp.minVal   = val; document.getElementById('expMinVal').textContent      = val; }
+  else if (field === 'max') { exp.maxVal   = val; document.getElementById('expMaxVal').textContent      = val; }
+  else if (field === 'dz')  { exp.deadzone = val; document.getElementById('expDeadzoneVal').textContent = val; }
+  markDirty();
+  drawCurve();
+  animatePedal(exp);
+}
+
+function expCurveChanged() {
+  if (currentBankIdx < 0) return;
+  banks[currentBankIdx].expPedals[currentExpSlot].curve = document.getElementById('expCurve').value;
+  markDirty();
+  drawCurve();
+}
+
+// ─── Curve Canvas ───
+function drawCurve() {
+  const canvas = document.getElementById('curveCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const curveType = document.getElementById('expCurve')?.value || 'linear';
+  const invert    = parseInt(document.getElementById('expInvert')?.value || '0');
+  const minV      = parseInt(document.getElementById('expMin')?.value || '0');
+  const maxV      = parseInt(document.getElementById('expMax')?.value || '127');
+  const pad = 16, cW = W - pad*2, cH = H - pad*2;
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(t => {
+    ctx.beginPath(); ctx.moveTo(pad + t*cW, pad); ctx.lineTo(pad + t*cW, pad+cH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, pad + t*cH); ctx.lineTo(pad+cW, pad + t*cH); ctx.stroke();
+  });
+  // Axes
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, pad); ctx.lineTo(pad, pad+cH); ctx.lineTo(pad+cW, pad+cH); ctx.stroke();
+
+  function getCurveY(t) {
+    let v;
+    switch(curveType) {
+      case 'log':    v = Math.log1p(t*9) / Math.log(10); break;
+      case 'exp':    v = (Math.exp(t*2.3)-1) / (Math.exp(2.3)-1); break;
+      case 'scurve': v = t < 0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; break;
+      case 'reverse':v = 1-t; break;
+      default:       v = t;
+    }
+    if (invert) v = 1-v;
+    return minV/127 + v*(maxV-minV)/127;
+  }
+
+  // Fill under
+  ctx.beginPath();
+  for (let px = 0; px <= cW; px++) {
+    const t = px/cW, v = getCurveY(t), cy = pad + cH - v*cH;
+    if (px===0) ctx.moveTo(pad+px, cy); else ctx.lineTo(pad+px, cy);
+  }
+  ctx.lineTo(pad+cW, pad+cH); ctx.lineTo(pad, pad+cH); ctx.closePath();
+  ctx.fillStyle = 'rgba(0,212,255,0.07)'; ctx.fill();
+
+  // Curve line
+  const grad = ctx.createLinearGradient(pad, pad+cH, pad+cW, pad);
+  grad.addColorStop(0, 'rgba(0,212,255,0.5)');
+  grad.addColorStop(1, 'rgba(0,212,255,1)');
+  ctx.strokeStyle = grad; ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let px = 0; px <= cW; px++) {
+    const t = px/cW, v = getCurveY(t), cy = pad + cH - v*cH;
+    if (px===0) ctx.moveTo(pad+px, cy); else ctx.lineTo(pad+px, cy);
+  }
+  ctx.stroke();
+
+  // Labels
+  ctx.fillStyle = 'rgba(90,96,112,0.8)'; ctx.font = '9px JetBrains Mono,monospace';
+  ctx.textAlign = 'left';  ctx.fillText('Heel→', pad, H-2);
+  ctx.textAlign = 'right'; ctx.fillText('→Toe', W-2, H-2);
+  ctx.textAlign = 'left';  ctx.fillText(String(maxV), pad, pad+8);
+  ctx.fillText(String(minV), pad, pad+cH-2);
+}
+
+// ─── Pedal rocker animation ───
+function animatePedal(exp) {
+  const rocker = document.getElementById('pedalRocker');
+  if (!rocker) return;
+  const angle = exp.invert ? 14 : -14;
+  rocker.style.transform = `rotate(${angle}deg)`;
+}
+
+// ─── Toe-switch messages ───
+function renderExpMessages() {
+  if (currentBankIdx < 0) return;
+  const exp = banks[currentBankIdx].expPedals[currentExpSlot];
+  const msgs = exp.toeMessages;
+  const list = document.getElementById('expMidiMsgList');
+  list.innerHTML = '';
+  const typeLabels = { 'PC':'Prog Chg','CC':'Control','NON':'Note On','NOF':'Note Off' };
+  const typeClass  = { 'PC':'type-PC', 'CC':'type-CC', 'NON':'type-NON','NOF':'type-NOF' };
+
+  msgs.forEach((msg, i) => {
+    const row = document.createElement('div');
+    row.className = 'midi-msg';
+    row.innerHTML = `
+      <select onchange="updateExpMsgType(${i},this.value)">
+        <option value="PC" ${msg.type==='PC'?'selected':''}>PC</option>
+        <option value="CC" ${msg.type==='CC'?'selected':''}>CC</option>
+        <option value="NON" ${msg.type==='NON'?'selected':''}>Note On</option>
+        <option value="NOF" ${msg.type==='NOF'?'selected':''}>Note Off</option>
+      </select>
+      <input type="number" min="1" max="16" value="${msg.ch}" placeholder="Ch"
+        oninput="updateExpMsg(${i},'ch',+this.value)">
+      <input type="number" min="0" max="127" value="${msg.data1}" placeholder="D1"
+        oninput="updateExpMsg(${i},'data1',+this.value)">
+      <input type="number" min="0" max="127" value="${msg.data2}" placeholder="D2" ${msg.type==='PC'?'disabled':''}
+        oninput="updateExpMsg(${i},'data2',+this.value)">
+      <span class="msg-type-badge ${typeClass[msg.type]||'type-PC'}">${typeLabels[msg.type]||''}</span>
+      <button class="btn-del" onclick="removeExpMsg(${i})">✕</button>
+    `;
+    list.appendChild(row);
+  });
+  document.getElementById('expMsgCount').textContent = msgs.length;
+}
+
+function addExpMessage() {
+  if (currentBankIdx < 0) return;
+  const exp = banks[currentBankIdx].expPedals[currentExpSlot];
+  if (exp.toeMessages.length >= 8) { toast('Max 8 messages per expression pedal', 'err'); return; }
+  exp.toeMessages.push(newMidiMsg());
+  markDirty(); renderExpMessages();
+}
+function removeExpMsg(idx) {
+  banks[currentBankIdx].expPedals[currentExpSlot].toeMessages.splice(idx,1);
+  markDirty(); renderExpMessages();
+}
+function updateExpMsgType(idx, type) {
+  banks[currentBankIdx].expPedals[currentExpSlot].toeMessages[idx].type = type;
+  markDirty(); renderExpMessages();
+}
+function updateExpMsg(idx, field, val) {
+  banks[currentBankIdx].expPedals[currentExpSlot].toeMessages[idx][field] = val;
+  markDirty();
+}
+
+// ─── Encode EXP pedal into SysEx bytes ───
+function encodeExpPedal(exp) {
+  const curveMap = {linear:0,log:1,exp:2,scurve:3,reverse:4};
+  const msgMap   = {CC:0,PC:1,PB:2,AT:3,NON:4};
+  return [
+    exp.enabled?1:0,
+    exp.source&0x7F,
+    (exp.midiChannel-1)&0x7F,
+    (msgMap[exp.msgType]??0)&0x7F,
+    exp.ccNum&0x7F,
+    exp.minVal&0x7F,
+    exp.maxVal&0x7F,
+    exp.deadzone&0x7F,
+    (curveMap[exp.curve]??0)&0x7F,
+    exp.invert&0x7F,
+    exp.smoothing&0x7F,
+    exp.toeMessages.length&0x7F,
+    ...exp.toeMessages.flatMap(m => encodeMidiMsg(m))
+  ];
+}
+
+// ═══════════════════════════════════════════
+// Toast
+// ═══════════════════════════════════════════
+let toastTimer;
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type || ''}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = '', 3000);
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ═══════════════════════════════════════════
+// Export / Import
+// ═══════════════════════════════════════════
+const EXPORT_VERSION = '1.1';
+
+function exportJSON() {
+  // Snapshot current UI state into the active bank first
+  if (currentBankIdx >= 0) saveBank();
+
+  const payload = {
+    _meta: {
+      app:     'Ampero Control Editor',
+      version: EXPORT_VERSION,
+      device:  'Hotone Ampero Control',
+      exported: new Date().toISOString(),
+      bankCount: banks.length
+    },
+    banks: banks
+  };
+
+  const json     = JSON.stringify(payload, null, 2);
+  const blob     = new Blob([json], { type: 'application/json' });
+  const url      = URL.createObjectURL(blob);
+  const ts       = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
+  const filename = `ampero-banks-${ts}.json`;
+
+  // Trigger browser download via content-disposition anchor
+  const a = document.createElement('a');
+  a.href     = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+  log('sys', `Exported ${banks.length} bank(s) → ${filename}`);
+  toast(`Exported ${banks.length} bank(s) as ${filename}`, 'ok');
+}
+
+// ─── Import flow ───
+let _pendingImportData = null; // holds parsed JSON until user confirms
+
+function importJSON() {
+  _pendingImportData = null;
+  document.getElementById('importPreview').classList.remove('show');
+  document.getElementById('confirmImportBtn').classList.remove('ready');
+  document.getElementById('dropZone').classList.remove('dragover');
+  document.getElementById('importModal').classList.add('show');
+}
+
+function closeImportModal() {
+  document.getElementById('importModal').classList.remove('show');
+  _pendingImportData = null;
+  // Reset file input so same file can be re-selected
+  document.getElementById('importFileInput').value = '';
+}
+
+// Triggered when user picks a file via <input type=file>
+function handleImportFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  readImportFile(file);
+}
+
+// Drag & drop handlers
+function onDragOver(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.add('dragover');
+}
+function onDragLeave(e) {
+  document.getElementById('dropZone').classList.remove('dragover');
+}
+function onDrop(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.remove('dragover');
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  if (!file.name.endsWith('.json')) {
+    toast('Please drop a .json file', 'err'); return;
+  }
+  readImportFile(file);
+}
+
+function readImportFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      validateAndPreviewImport(parsed, file.name);
+    } catch (err) {
+      toast('Invalid JSON file: ' + err.message, 'err');
+      log('err', 'Import parse error: ' + err.message);
+    }
+  };
+  reader.onerror = () => toast('Failed to read file', 'err');
+  reader.readAsText(file);
+}
+
+function validateAndPreviewImport(data, filename) {
+  // Accept both { banks: [...] } format and raw array
+  let importedBanks;
+  if (Array.isArray(data)) {
+    importedBanks = data;
+  } else if (data && Array.isArray(data.banks)) {
+    importedBanks = data.banks;
+  } else {
+    toast('Unrecognized file format — expected Ampero Control Editor JSON', 'err');
+    return;
+  }
+
+  // Basic sanity check on each bank
+  const valid = importedBanks.every(b =>
+    typeof b === 'object' && b !== null && 'name' in b && 'switches' in b
+  );
+  if (!valid || importedBanks.length === 0) {
+    toast('File contains no valid bank data', 'err');
+    return;
+  }
+
+  // Hydrate missing fields for forward/backward compat
+  importedBanks = importedBanks.map((b, i) => hydrateBank(b, i));
+
+  _pendingImportData = importedBanks;
+
+  // Show preview
+  document.getElementById('previewFileName').textContent  = filename;
+  document.getElementById('previewBankCount').textContent = `${importedBanks.length} bank(s)`;
+  document.getElementById('previewVersion').textContent   = data._meta?.version || '(unknown)';
+  const exported = data._meta?.exported;
+  document.getElementById('previewDate').textContent      = exported
+    ? new Date(exported).toLocaleString() : '(unknown)';
+
+  document.getElementById('importPreview').classList.add('show');
+  document.getElementById('confirmImportBtn').classList.add('ready');
+}
+
+// Fill in any fields that may be missing (older export or partial data)
+function hydrateBank(raw, fallbackIdx) {
+  const base = newBank(raw.number ?? fallbackIdx);
+  // Scalars
+  base.name        = raw.name        ?? base.name;
+  base.number      = raw.number      ?? base.number;
+  base.outputTo    = raw.outputTo    ?? base.outputTo;
+  base.midiChannel = raw.midiChannel ?? base.midiChannel;
+  base.dirty       = false;
+
+  // Switches (up to 4)
+  if (Array.isArray(raw.switches)) {
+    base.switches = raw.switches.slice(0,4).map(s => ({
+      mode:   s.mode   ?? 0,
+      groupA: Array.isArray(s.groupA) ? s.groupA.map(hydrateMidiMsg) : [],
+      groupB: Array.isArray(s.groupB) ? s.groupB.map(hydrateMidiMsg) : []
+    }));
+    // Pad to 4 if fewer
+    while (base.switches.length < 4) base.switches.push(newFootswitch());
+  }
+
+  // Expression pedals (up to 2)
+  if (Array.isArray(raw.expPedals)) {
+    base.expPedals = raw.expPedals.slice(0,2).map((ep, i) => {
+      const def = newExpPedal(i);
+      return {
+        slot:         i,
+        enabled:      ep.enabled      ?? def.enabled,
+        source:       ep.source       ?? def.source,
+        midiChannel:  ep.midiChannel  ?? def.midiChannel,
+        msgType:      ep.msgType      ?? def.msgType,
+        ccNum:        ep.ccNum        ?? def.ccNum,
+        minVal:       ep.minVal       ?? def.minVal,
+        maxVal:       ep.maxVal       ?? def.maxVal,
+        deadzone:     ep.deadzone     ?? def.deadzone,
+        curve:        ep.curve        ?? def.curve,
+        invert:       ep.invert       ?? def.invert,
+        smoothing:    ep.smoothing    ?? def.smoothing,
+        toeMessages:  Array.isArray(ep.toeMessages) ? ep.toeMessages.map(hydrateMidiMsg) : []
+      };
+    });
+    while (base.expPedals.length < 2) base.expPedals.push(newExpPedal(base.expPedals.length));
+  }
+
+  return base;
+}
+
+function hydrateMidiMsg(m) {
+  return {
+    type:  m.type  ?? 'PC',
+    ch:    m.ch    ?? 1,
+    data1: m.data1 ?? 0,
+    data2: m.data2 ?? 0
+  };
+}
+
+function confirmImport() {
+  if (!_pendingImportData) return;
+
+  const mode = document.querySelector('input[name="importMode"]:checked')?.value || 'replace';
+  const imported = _pendingImportData;
+
+  if (mode === 'replace') {
+    banks = imported;
+  } else if (mode === 'append') {
+    banks = [...banks, ...imported];
+    if (banks.length > 100) {
+      banks = banks.slice(0, 100);
+      toast('Capped at 100 banks — some banks were dropped', 'err');
+    }
+  } else if (mode === 'merge') {
+    // Index existing banks by bank number
+    const byNum = new Map(banks.map(b => [b.number, b]));
+    for (const ib of imported) byNum.set(ib.number, ib);
+    banks = Array.from(byNum.values()).sort((a,b) => a.number - b.number);
+  }
+
+  currentBankIdx = -1;
+  closeImportModal();
+  renderBankList();
+  selectBank(0);
+
+  const modeLabel = { replace:'replaced', append:'appended', merge:'merged' }[mode];
+  log('sys', `Imported ${imported.length} bank(s) — mode: ${mode}`);
+  toast(`${imported.length} bank(s) ${modeLabel} successfully`, 'ok');
+}
+
+// Close modal on backdrop click — registered after DOM ready in init()
+</script>
+
+<!-- ─── Import Modal ─── -->
+<div id="importModal">
+  <div class="import-card">
+    <div class="import-card-header">
+      <div class="import-card-title">
+        <span style="color:var(--accent)">↓</span> Import Banks
+      </div>
+      <button class="btn-close-modal" onclick="closeImportModal()">✕</button>
+    </div>
+    <div class="import-card-body">
+
+      <div class="import-drop-zone" id="dropZone"
+        onclick="document.getElementById('importFileInput').click()"
+        ondragover="onDragOver(event)"
+        ondragleave="onDragLeave(event)"
+        ondrop="onDrop(event)">
+        <div class="import-drop-icon">📂</div>
+        <div class="import-drop-text"><strong>Click to browse</strong> or drag &amp; drop</div>
+        <div class="import-drop-hint">.JSON — Ampero Control Editor format</div>
+      </div>
+
+      <div class="import-preview" id="importPreview">
+        <div class="import-preview-row">
+          <span class="import-preview-key">File</span>
+          <span class="import-preview-val" id="previewFileName">—</span>
+        </div>
+        <div class="import-preview-row">
+          <span class="import-preview-key">Banks found</span>
+          <span class="import-preview-val" id="previewBankCount">—</span>
+        </div>
+        <div class="import-preview-row">
+          <span class="import-preview-key">Format version</span>
+          <span class="import-preview-val" id="previewVersion">—</span>
+        </div>
+        <div class="import-preview-row">
+          <span class="import-preview-key">Created</span>
+          <span class="import-preview-val" id="previewDate">—</span>
+        </div>
+      </div>
+
+      <div class="import-merge-options">
+        <div class="import-merge-label">Import Mode</div>
+        <label class="radio-option">
+          <input type="radio" name="importMode" value="replace" checked>
+          <div class="radio-option-text">
+            Replace all banks
+            <small>Discard current banks and load from file</small>
+          </div>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="importMode" value="append">
+          <div class="radio-option-text">
+            Append to existing
+            <small>Add imported banks after the current list</small>
+          </div>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="importMode" value="merge">
+          <div class="radio-option-text">
+            Merge by bank number
+            <small>Overwrite matching bank numbers, keep the rest</small>
+          </div>
+        </label>
+      </div>
+
+    </div>
+    <div class="import-card-footer">
+      <button class="btn-cancel" onclick="closeImportModal()">Cancel</button>
+      <button class="btn-confirm-import" id="confirmImportBtn" onclick="confirmImport()">Load Banks</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+</body>
+</html>
