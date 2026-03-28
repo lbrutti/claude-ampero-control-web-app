@@ -1412,9 +1412,6 @@ async function connectBLE() {
   }
   setConnecting();
   try {
-    // Use acceptAllDevices so the browser shows ALL nearby BLE devices.
-    // We list all known UUIDs as optionalServices so Web Bluetooth grants
-    // us access to them after the user picks the device.
     bleDevice = await navigator.bluetooth.requestDevice({
       acceptAllDevices: true,
       optionalServices: ALL_UUIDS
@@ -1424,66 +1421,88 @@ async function connectBLE() {
     log('sys', `Selected: ${bleDevice.name || bleDevice.id}`);
 
     bleServer = await bleDevice.gatt.connect();
-    log('sys', 'GATT connected — discovering services…');
-
-    // Enumerate ALL primary services and log them for debugging
-    const allServices = await bleServer.getPrimaryServices();
-    log('sys', `Found ${allServices.length} service(s)`);
+    log('sys', 'GATT connected — discovering characteristics…');
 
     charCmdTx = null; charBankName = null; charStatus = null; charSwState = null;
 
-    for (const svc of allServices) {
-      log('sys', `  SVC: ${svc.uuid}`);
-      let chars = [];
-      try { chars = await svc.getCharacteristics(); } catch(_) { continue; }
-      for (const c of chars) {
-        const props = Object.keys(c.properties).filter(k => c.properties[k]).join(',');
-        log('sys', `    CHAR: ${c.uuid}  [${props}]`);
-        const u = c.uuid.toLowerCase();
-        if (u === UUID_CMD_TX)  charCmdTx    = c;
-        if (u === UUID_NAMES)   charBankName = c;
-        if (u === UUID_STATUS)  charStatus   = c;
-        if (u === UUID_SWSTATE) charSwState  = c;
+    // Web Bluetooth's getPrimaryServices() with no args hangs when the device's
+    // service UUIDs are not in its advertisement payload (which Ampero Control doesn't do).
+    // The correct approach: request each known service UUID directly.
+    // We try both the 36d70001 and 36d71001 service blocks found in the HCI log.
+
+    const SVC_BLOCKS = [
+      ['36d70001','36d70002','36d70003','36d70004','36d70005','36d70006','36d70007'],
+      ['36d71001','36d71002','36d71003','36d71004','36d71005','36d71006','36d71007','36d71008'],
+    ];
+
+    for (const block of SVC_BLOCKS) {
+      for (const prefix of block) {
+        const uuid = prefix + UUID_BASE;
+        let svc = null;
+        try {
+          svc = await bleServer.getPrimaryService(uuid);
+        } catch (_) {
+          continue; // this service UUID doesn't exist on this device — skip
+        }
+        log('sys', `  SVC found: ${uuid}`);
+
+        // Now get all characteristics of this service
+        let chars = [];
+        try { chars = await svc.getCharacteristics(); } catch(_) { continue; }
+
+        for (const c of chars) {
+          const props = Object.keys(c.properties).filter(k => c.properties[k]).join(',');
+          log('sys', `    CHAR: ${c.uuid}  [${props}]`);
+          const u = c.uuid.toLowerCase();
+          if (u === UUID_CMD_TX)  charCmdTx    = c;
+          if (u === UUID_NAMES)   charBankName = c;
+          if (u === UUID_STATUS)  charStatus   = c;
+          if (u === UUID_SWSTATE) charSwState  = c;
+        }
+
+        // Once we found charCmdTx we have what we need — stop searching
+        if (charCmdTx) break;
       }
+      if (charCmdTx) break;
     }
 
-    // Verify we found what we need
-    if (!charCmdTx && !charBankName) {
+    if (!charCmdTx) {
       throw new Error(
-        'Ampero Control service not found.\n' +
-        `Services seen: ${allServices.map(s=>s.uuid).join(', ')}\n` +
-        'Make sure you selected the Ampero Control device.'
+        'Ampero Control characteristics not found. ' +
+        'Make sure you selected the Ampero Control (not a phone or other device). ' +
+        'Check the MIDI Monitor for discovered services.'
       );
     }
 
-    // Subscribe to all available notify characteristics
-    if (charBankName && charBankName.properties.notify) {
+    log('sys', `charCmdTx found ✓  charBankName: ${!!charBankName}  charStatus: ${!!charStatus}`);
+
+    // Subscribe to notify characteristics
+    if (charBankName) {
       await charBankName.startNotifications();
       charBankName.addEventListener('characteristicvaluechanged', onNamesNotify);
-      log('sys', 'Subscribed to NAMES notifications');
+      log('sys', 'Subscribed to NAMES notifications ✓');
     }
-    if (charStatus && charStatus.properties.notify) {
+    if (charStatus) {
       await charStatus.startNotifications();
       charStatus.addEventListener('characteristicvaluechanged', onStatusNotify);
-      log('sys', 'Subscribed to STATUS notifications');
+      log('sys', 'Subscribed to STATUS notifications ✓');
     }
-    if (charSwState && charSwState.properties.notify) {
+    if (charSwState) {
       await charSwState.startNotifications();
       charSwState.addEventListener('characteristicvaluechanged', onSwStateNotify);
-      log('sys', 'Subscribed to SWSTATE notifications');
+      log('sys', 'Subscribed to SWSTATE notifications ✓');
     }
 
     setConnected(bleDevice.name || 'Ampero Control');
     toast(`Connected to ${bleDevice.name || 'Ampero Control'}`, 'ok');
 
-    // Auto-read all banks from device
     await startDeviceDump();
 
   } catch (e) {
     setDisconnected();
     if (e.name !== 'NotFoundError') {
       log('err', `Connection failed: ${e.message}`);
-      toast(`Connection failed: ${e.message.slice(0, 80)}`, 'err');
+      toast(`Connection failed: ${e.message.slice(0, 100)}`, 'err');
     }
   }
 }
