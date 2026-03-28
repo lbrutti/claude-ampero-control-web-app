@@ -1256,43 +1256,43 @@
 <script>
 // ═══════════════════════════════════════════════════════════════════
 // HOTONE AMPERO CONTROL — Real BLE Protocol
-// Source: BTSnoop HCI log reverse engineering
+// Source: BTSnoop HCI log — READ_BY_GROUP_TYPE responses
 //
-// The device uses a proprietary GATT service (NOT BLE MIDI).
-// All characteristic UUIDs share the base: xxxx-a25b-40fe-99a0-36453a1d8704
+// PRIMARY SERVICES (confirmed):
+//   0x1800 (GAP),  0x1801 (GATT),  0x180a (Device Info)
+//   4fc669c6-16cc-4bef-9629-0146097fc45c  hdl 0x0023–0x004a  ← MAIN CONFIG SERVICE
+//   4fc61110-16cc-4bef-9629-0146097fc45c  hdl 0x004b–0x0072  ← SECOND SERVICE BLOCK
+//   03b80e5a-ede8-4b33-a751-6ce34ec4c700  hdl 0x0073–0x007c  ← BLE MIDI (OTA only)
+//   f000ffc0-0451-4000-b000-000000000000  hdl 0x007d–0xffff  ← TI OAD (firmware update)
 //
-// From the HCI log discovery (READ_BY_TYPE responses):
-//   Service discovered at hdl range 0x0023–0x004A (among others)
-//   CHAR_CMD_TX   36d70001…  hdl 0x0025  WRITE_WITHOUT_RESPONSE | NOTIFY
-//   CHAR_NAMES    36d70002…  hdl 0x0029  NOTIFY  (bank name list + config blobs)
-//   CHAR_STATUS   36d70003…  hdl 0x002d  NOTIFY  (current bank / ACKs)
-//   CHAR_EXP      36d70004…  hdl 0x0031  NOTIFY
-//   CHAR_EXP2     36d70005…  hdl 0x0035  NOTIFY
-//   CHAR_SWSTATE  36d70006…  hdl 0x0039  NOTIFY  (footswitch press events)
-//   CHAR_MISC     36d70007…  hdl 0x003d  NOTIFY
-//
-// Web Bluetooth requires ALL service UUIDs to be declared at requestDevice time.
-// We use acceptAllDevices + optionalServices listing every known UUID.
+// CHARACTERISTICS in main service (from READ_BY_TYPE responses):
+//   hdl 0x0025  36d70001-a25b-40fe-99a0-36453a1d8704  WRITE_WITHOUT_RESPONSE | NOTIFY → CMD_TX
+//   hdl 0x0029  36d70002-a25b-40fe-99a0-36453a1d8704  NOTIFY                          → BANK NAMES
+//   hdl 0x002d  36d70003-a25b-40fe-99a0-36453a1d8704  NOTIFY                          → STATUS
+//   hdl 0x0031  36d70004-a25b-40fe-99a0-36453a1d8704  NOTIFY
+//   hdl 0x0035  36d70005-a25b-40fe-99a0-36453a1d8704  NOTIFY
+//   hdl 0x0039  36d70006-a25b-40fe-99a0-36453a1d8704  NOTIFY                          → SW STATE
+//   hdl 0x003d  36d70007-a25b-40fe-99a0-36453a1d8704  NOTIFY
 // ═══════════════════════════════════════════════════════════════════
 
-// All known Ampero Control characteristic/service UUIDs
+// Real service UUIDs (confirmed from HCI log READ_BY_GROUP_TYPE)
+const SVC_MAIN   = '4fc669c6-16cc-4bef-9629-0146097fc45c';
+const SVC_SECOND = '4fc61110-16cc-4bef-9629-0146097fc45c';
+const SVC_MIDI   = '03b80e5a-ede8-4b33-a751-6ce34ec4c700';
+
+// Characteristic UUIDs inside the main service
 const UUID_BASE    = '-a25b-40fe-99a0-36453a1d8704';
-const UUID_SVC1    = '36d70001' + UUID_BASE;  // also used as characteristic
-const UUID_SVC2    = '36d71001' + UUID_BASE;  // second service block (hdl 0x004d+)
+const UUID_CMD_TX  = '36d70001' + UUID_BASE;  // hdl 0x0025 — write commands
+const UUID_NAMES   = '36d70002' + UUID_BASE;  // hdl 0x0029 — bank names / config
+const UUID_STATUS  = '36d70003' + UUID_BASE;  // hdl 0x002d — status / ACK
+const UUID_SWSTATE = '36d70006' + UUID_BASE;  // hdl 0x0039 — footswitch events
 
-// Characteristic UUIDs (confirmed from HCI log)
-const UUID_CMD_TX  = '36d70001' + UUID_BASE;  // hdl 0x0025 — WRITE here
-const UUID_NAMES   = '36d70002' + UUID_BASE;  // hdl 0x0029 — bank names/config
-const UUID_STATUS  = '36d70003' + UUID_BASE;  // hdl 0x002d — status/ACK
-const UUID_SWSTATE = '36d70006' + UUID_BASE;  // hdl 0x0039 — sw press
-
-// All UUIDs to declare as optionalServices (Web Bluetooth requirement)
+// All UUIDs we need Web Bluetooth to grant access to
 const ALL_UUIDS = [
-  '36d70001', '36d70002', '36d70003', '36d70004',
-  '36d70005', '36d70006', '36d70007',
-  '36d71001', '36d71002', '36d71003', '36d71004',
-  '36d71005', '36d71006', '36d71007', '36d71008',
-].map(u => u + UUID_BASE);
+  SVC_MAIN, SVC_SECOND, SVC_MIDI,
+  '36d70001','36d70002','36d70003','36d70004','36d70005','36d70006','36d70007',
+  '36d71001','36d71002','36d71003','36d71004','36d71005','36d71006','36d71007','36d71008',
+].map(u => u.includes('-') ? u : u + UUID_BASE);
 
 // ═══════════════════════════════════════════
 // State
@@ -1421,76 +1421,55 @@ async function connectBLE() {
     log('sys', `Selected: ${bleDevice.name || bleDevice.id}`);
 
     bleServer = await bleDevice.gatt.connect();
-    log('sys', 'GATT connected — discovering characteristics…');
+    log('sys', 'GATT connected — getting services…');
 
     charCmdTx = null; charBankName = null; charStatus = null; charSwState = null;
 
-    // Web Bluetooth's getPrimaryServices() with no args hangs when the device's
-    // service UUIDs are not in its advertisement payload (which Ampero Control doesn't do).
-    // The correct approach: request each known service UUID directly.
-    // We try both the 36d70001 and 36d71001 service blocks found in the HCI log.
+    // Open the two confirmed Ampero primary services and read all their characteristics.
+    // Service UUIDs confirmed from HCI log READ_BY_GROUP_TYPE responses.
+    for (const svcUuid of [SVC_MAIN, SVC_SECOND]) {
+      let svc = null;
+      try { svc = await bleServer.getPrimaryService(svcUuid); }
+      catch (_) { log('sys', `SVC not found: ${svcUuid}`); continue; }
+      log('sys', `SVC found: ${svcUuid}`);
 
-    const SVC_BLOCKS = [
-      ['36d70001','36d70002','36d70003','36d70004','36d70005','36d70006','36d70007'],
-      ['36d71001','36d71002','36d71003','36d71004','36d71005','36d71006','36d71007','36d71008'],
-    ];
+      let chars = [];
+      try { chars = await svc.getCharacteristics(); }
+      catch (e) { log('err', `getCharacteristics failed: ${e.message}`); continue; }
 
-    for (const block of SVC_BLOCKS) {
-      for (const prefix of block) {
-        const uuid = prefix + UUID_BASE;
-        let svc = null;
-        try {
-          svc = await bleServer.getPrimaryService(uuid);
-        } catch (_) {
-          continue; // this service UUID doesn't exist on this device — skip
-        }
-        log('sys', `  SVC found: ${uuid}`);
-
-        // Now get all characteristics of this service
-        let chars = [];
-        try { chars = await svc.getCharacteristics(); } catch(_) { continue; }
-
-        for (const c of chars) {
-          const props = Object.keys(c.properties).filter(k => c.properties[k]).join(',');
-          log('sys', `    CHAR: ${c.uuid}  [${props}]`);
-          const u = c.uuid.toLowerCase();
-          if (u === UUID_CMD_TX)  charCmdTx    = c;
-          if (u === UUID_NAMES)   charBankName = c;
-          if (u === UUID_STATUS)  charStatus   = c;
-          if (u === UUID_SWSTATE) charSwState  = c;
-        }
-
-        // Once we found charCmdTx we have what we need — stop searching
-        if (charCmdTx) break;
+      for (const c of chars) {
+        const props = Object.keys(c.properties).filter(k => c.properties[k]).join(',');
+        log('sys', `  CHAR: ${c.uuid} [${props}]`);
+        assignChar(c);
       }
-      if (charCmdTx) break;
     }
+
+    log('sys', `CMD_TX:  ${charCmdTx    ? '✓ ' + charCmdTx.uuid    : '✗ not found'}`);
+    log('sys', `NAMES:   ${charBankName ? '✓ ' + charBankName.uuid  : '✗ not found'}`);
+    log('sys', `STATUS:  ${charStatus   ? '✓ ' + charStatus.uuid    : '✗ not found'}`);
+    log('sys', `SWSTATE: ${charSwState  ? '✓ ' + charSwState.uuid   : '✗ not found'}`);
 
     if (!charCmdTx) {
       throw new Error(
-        'Ampero Control characteristics not found. ' +
-        'Make sure you selected the Ampero Control (not a phone or other device). ' +
-        'Check the MIDI Monitor for discovered services.'
+        'CMD_TX characteristic not found — check MIDI Monitor for what was discovered.'
       );
     }
 
-    log('sys', `charCmdTx found ✓  charBankName: ${!!charBankName}  charStatus: ${!!charStatus}`);
-
-    // Subscribe to notify characteristics
-    if (charBankName) {
-      await charBankName.startNotifications();
-      charBankName.addEventListener('characteristicvaluechanged', onNamesNotify);
-      log('sys', 'Subscribed to NAMES notifications ✓');
-    }
-    if (charStatus) {
-      await charStatus.startNotifications();
-      charStatus.addEventListener('characteristicvaluechanged', onStatusNotify);
-      log('sys', 'Subscribed to STATUS notifications ✓');
-    }
-    if (charSwState) {
-      await charSwState.startNotifications();
-      charSwState.addEventListener('characteristicvaluechanged', onSwStateNotify);
-      log('sys', 'Subscribed to SWSTATE notifications ✓');
+    // Subscribe to all notify characteristics
+    for (const [char, name, handler] of [
+      [charBankName, 'NAMES',   onNamesNotify  ],
+      [charStatus,   'STATUS',  onStatusNotify ],
+      [charSwState,  'SWSTATE', onSwStateNotify],
+    ]) {
+      if (char) {
+        try {
+          await char.startNotifications();
+          char.addEventListener('characteristicvaluechanged', handler);
+          log('sys', `Subscribed to ${name} ✓`);
+        } catch(e) {
+          log('err', `Subscribe ${name} failed: ${e.message}`);
+        }
+      }
     }
 
     setConnected(bleDevice.name || 'Ampero Control');
@@ -1502,9 +1481,26 @@ async function connectBLE() {
     setDisconnected();
     if (e.name !== 'NotFoundError') {
       log('err', `Connection failed: ${e.message}`);
-      toast(`Connection failed: ${e.message.slice(0, 100)}`, 'err');
+      toast(`Failed: ${e.message.slice(0, 100)}`, 'err');
     }
   }
+}
+
+// Assign a discovered characteristic to the right role by UUID,
+// with a property-based fallback if UUIDs don't match exactly.
+function assignChar(c) {
+  const u = c.uuid.toLowerCase();
+  if (u === UUID_CMD_TX)  { charCmdTx    = c; return; }
+  if (u === UUID_NAMES)   { charBankName = c; return; }
+  if (u === UUID_STATUS)  { charStatus   = c; return; }
+  if (u === UUID_SWSTATE) { charSwState  = c; return; }
+  // Property-based fallback: write+notify → CMD_TX; notify-only → fill slots in order
+  const w = c.properties.writeWithoutResponse || c.properties.write;
+  const n = c.properties.notify || c.properties.indicate;
+  if (w && n && !charCmdTx)    { charCmdTx    = c; log('sys', `  → CMD_TX (by props)`);  return; }
+  if (!w && n && !charBankName) { charBankName = c; log('sys', `  → NAMES (by props)`);   return; }
+  if (!w && n && !charStatus)   { charStatus   = c; log('sys', `  → STATUS (by props)`);  return; }
+  if (!w && n && !charSwState)  { charSwState  = c; log('sys', `  → SWSTATE (by props)`); }
 }
 
 function disconnect() {
