@@ -1487,6 +1487,10 @@ async function connectBLE() {
     }
     log('sys', 'All CCCDs enabled ✓');
 
+    // Small delay before first command — the app does all CCCD writes
+    // then immediately sends GET_BANK_LIST; give device 100ms to settle
+    await sleep(100);
+
     setConnected(bleDevice.name || 'Ampero Control');
     toast(`Connected to ${bleDevice.name || 'Ampero Control'}`, 'ok');
 
@@ -1535,16 +1539,27 @@ function onDisconnected() {
 async function writeCmd(bytes) {
   if (!charCmdTx) { log('err', 'No CMD_TX char — not connected'); return false; }
   try {
-    await charCmdTx.writeValueWithoutResponse(new Uint8Array(bytes));
+    // hdl 0x0025 props=0x1a: READ+WRITE+NOTIFY (no WRITE_WITHOUT_RESPONSE)
+    // Must use writeValue (with response), NOT writeValueWithoutResponse
+    await charCmdTx.writeValue(new Uint8Array(bytes));
     txCount++;
     document.getElementById('txCount').textContent = txCount;
     log('tx', 'CMD: ' + hexStr(bytes));
     return true;
   } catch (e) {
-    errCount++;
-    document.getElementById('errCount').textContent = errCount;
-    log('err', `TX: ${e.message}`);
-    return false;
+    // Fallback: try writeValueWithoutResponse if writeValue fails
+    try {
+      await charCmdTx.writeValueWithoutResponse(new Uint8Array(bytes));
+      txCount++;
+      document.getElementById('txCount').textContent = txCount;
+      log('tx', 'CMD (no-rsp): ' + hexStr(bytes));
+      return true;
+    } catch (e2) {
+      errCount++;
+      document.getElementById('errCount').textContent = errCount;
+      log('err', `TX: ${e.message} / ${e2.message}`);
+      return false;
+    }
   }
 }
 
