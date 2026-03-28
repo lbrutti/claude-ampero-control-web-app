@@ -1455,22 +1455,37 @@ async function connectBLE() {
       );
     }
 
-    // Subscribe to all notify characteristics
-    for (const [char, name, handler] of [
-      [charBankName, 'NAMES',   onNamesNotify  ],
-      [charStatus,   'STATUS',  onStatusNotify ],
-      [charSwState,  'SWSTATE', onSwStateNotify],
-    ]) {
-      if (char) {
-        try {
-          await char.startNotifications();
-          char.addEventListener('characteristicvaluechanged', handler);
-          log('sys', `Subscribed to ${name} ✓`);
-        } catch(e) {
-          log('err', `Subscribe ${name} failed: ${e.message}`);
-        }
+    // CRITICAL: The Ampero Control requires ALL notify CCCDs to be enabled
+    // before it responds to any command. The app enables 17 CCCDs sequentially.
+    // We must call startNotifications() on every notify-capable characteristic
+    // across all services — not just the ones we care about.
+    // Collect every characteristic we found, enable all their notifications.
+    log('sys', 'Enabling all CCCDs (required by device before it will respond)…');
+    const allChars = [];
+    for (const svcUuid of [SVC_MAIN, SVC_SECOND, SVC_MIDI]) {
+      let svc = null;
+      try { svc = await bleServer.getPrimaryService(svcUuid); } catch(_) { continue; }
+      let chars = [];
+      try { chars = await svc.getCharacteristics(); } catch(_) { continue; }
+      allChars.push(...chars);
+    }
+
+    for (const c of allChars) {
+      const canNotify = c.properties.notify || c.properties.indicate;
+      if (!canNotify) continue;
+      try {
+        await c.startNotifications();
+        // Wire our handlers to the characteristics we care about
+        const u = c.uuid.toLowerCase();
+        if (u === UUID_NAMES)   c.addEventListener('characteristicvaluechanged', onNamesNotify);
+        if (u === UUID_STATUS)  c.addEventListener('characteristicvaluechanged', onStatusNotify);
+        if (u === UUID_SWSTATE) c.addEventListener('characteristicvaluechanged', onSwStateNotify);
+        log('sys', `  CCCD enabled: ${c.uuid}`);
+      } catch(e) {
+        log('err', `  CCCD ${c.uuid} failed: ${e.message}`);
       }
     }
+    log('sys', 'All CCCDs enabled ✓');
 
     setConnected(bleDevice.name || 'Ampero Control');
     toast(`Connected to ${bleDevice.name || 'Ampero Control'}`, 'ok');
