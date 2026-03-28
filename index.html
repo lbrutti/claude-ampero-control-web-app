@@ -546,7 +546,7 @@
     border-radius: 10px; padding: 18px;
     display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;
   }
-  .global-field { display: flex; flex-direction: column; gap: 6px; }
+  .global-field { display: flex; flex-direction: column; gap: 6px; position: relative; }
   .global-label {
     font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim);
     font-weight: 600;
@@ -556,10 +556,24 @@
     background: var(--panel2); border: 1px solid var(--border);
     color: var(--text-bright); border-radius: var(--radius);
     padding: 7px 10px; width: 100%;
-    outline: none; appearance: none;
+    outline: none; appearance: none; -webkit-appearance: none;
     transition: border-color 0.15s;
+    cursor: pointer;
   }
+  .global-field input { cursor: text; }
+  .global-field select { padding-right: 28px; }
   .global-field select:focus, .global-field input:focus { border-color: var(--accent); }
+  /* dropdown arrow for all global-field selects */
+  .global-field::after {
+    content: '▾';
+    position: absolute; right: 10px; bottom: 9px;
+    color: var(--text-dim); pointer-events: none; font-size: 12px;
+    line-height: 1;
+  }
+  /* don't show arrow if the field contains an input (not a select) */
+  .global-field:has(input)::after { display: none; }
+  /* also fix exp-config-grid global-fields */
+  .exp-config-grid .global-field::after { bottom: 9px; }
 
   .section-label {
     font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
@@ -1609,18 +1623,14 @@ function onSwStateNotify(event) {
 function handleNamesPacket(val) {
   if (_dumpPhase === 'idle' || _dumpPhase === 'done') return;
 
-  // Phase 1: bank name list
-  // Format: [bank_num:1][flag:1][name:16][pad:2] — exactly 20 bytes with flag 0x01 or 0x03
+  // ── Phase 1: bank name list ──
+  // Format: [bank_num:1][flag:1][name:16][pad:2] — 20 bytes, flag 0x01 or 0x03
   if (_dumpPhase === 'names' && val.length === 20 && (val[1] === 0x01 || val[1] === 0x03)) {
     const bankNum = val[0];
-    const flag    = val[1];
     const name    = decodeStr(val.slice(2, 18));
     _dumpResults[bankNum] = { ...newBank(bankNum), name };
     _dumpNamesReceived++;
     updateDumpProgress(_dumpNamesReceived, 100);
-    log('sys', `Bank name: [${bankNum}] "${name}"`);
-
-    // All 100 names received → move to config phase
     if (_dumpNamesReceived >= 100) {
       log('sys', 'All bank names received — fetching configs…');
       _dumpPhase = 'config';
@@ -1629,36 +1639,36 @@ function handleNamesPacket(val) {
     return;
   }
 
-  // Phase 2: bank config blob (multi-packet, reassemble until short packet)
+  // ── Phase 2: config blob assembly ──
+  // Config arrives ONLY after the 3-command handshake in _fetchBankConfig.
+  // The blob spans multiple 20-byte chunks and ends with a SHORT packet (<20 bytes).
   if (_dumpPhase === 'config' && _configPending >= 0) {
     if (_configBuf === null) {
-      // First chunk
       _configBuf = Array.from(val);
     } else {
-      // Continuation
       _configBuf.push(...val);
     }
-
-    // Config is complete when we get a packet shorter than 20 bytes (final chunk)
     if (val.length < 20) {
+      // Short final packet — blob is complete
       const blob = new Uint8Array(_configBuf);
-      _configBuf = null;
+      _configBuf     = null;
       clearTimeout(_configTimer);
-      _configTimer = null;
-      parseBankConfig(_configPending, blob);
-      const resolve = _configResolve;
-      _configResolve = null;
+      _configTimer   = null;
+      const pending  = _configPending;
       _configPending = -1;
+      const resolve  = _configResolve;
+      _configResolve = null;
+      parseBankConfig(pending, blob);
       if (resolve) resolve();
     }
   }
 }
 
 // ═══════════════════════════════════════════
-// Device dump — sequential, simple
+// Device dump — sequential
 // ═══════════════════════════════════════════
 const TOTAL_BANKS    = 100;
-const CONFIG_TIMEOUT = 800; // ms
+const CONFIG_TIMEOUT = 1500; // ms — generous timeout per bank
 
 async function startDeviceDump() {
   _dumpPhase         = 'names';
@@ -1670,11 +1680,12 @@ async function startDeviceDump() {
   showDumpProgress(0, TOTAL_BANKS);
   log('sys', 'Sending GET_BANK_LIST…');
   await cmdGetBankList();
-  // handleNamesPacket() drives the rest asynchronously
+  // handleNamesPacket() drives the rest — fires _startConfigDump when names done
 }
 
 async function _startConfigDump() {
   const bankNums = Object.keys(_dumpResults).map(Number).sort((a,b)=>a-b);
+  log('sys', `Fetching config for ${bankNums.length} banks…`);
   let done = 0;
   for (const bn of bankNums) {
     if (!connected) break;
@@ -1686,16 +1697,29 @@ async function _startConfigDump() {
 }
 
 function _fetchBankConfig(bankNum) {
+  // CONFIRMED FROM HCI LOG — three-command sequence to get config blob:
+  //  1. [bankNum, 0x06]           → device sends STATUS ack on 0x002d
+  //  2. [bankNum, 0x01, 0x00, 0xd5, 0x01] → device sends STATUS ack on 0x002d
+  //  3. [bankNum, 0x08, 0x01]     → device sends config blob on 0x0029 (NAMES char)
+  //
+  // The config blob arrives as N×20-byte packets ending with one short (<20b) packet.
+  // We resolve the promise when the short packet arrives (handled in handleNamesPacket).
+
   return new Promise(async resolve => {
     _configPending = bankNum;
     _configBuf     = null;
     _configResolve = resolve;
 
-    await cmdGetBankConfig(bankNum);
+    // Send all three commands
+    await writeCmd([bankNum & 0x7F, 0x06]);
+    await sleep(20);
+    await writeCmd([bankNum & 0x7F, 0x01, 0x00, 0xD5, 0x01]);
+    await sleep(20);
+    await writeCmd([bankNum & 0x7F, 0x08, 0x01]);
 
-    // Timeout — if no response, move on
+    // Timeout fallback
     _configTimer = setTimeout(() => {
-      log('sys', `Bank ${bankNum}: timeout — using name only`);
+      log('sys', `Bank ${bankNum}: config timeout`);
       _configBuf     = null;
       _configPending = -1;
       const r = _configResolve;
